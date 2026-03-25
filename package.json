@@ -1,0 +1,18 @@
+{
+  "name": "tron-tx-simulator",
+  "version": "1.0.0",
+  "description": "Tron transaction simulator with auto gas funding for TRC20 transfers",
+  "main": "simulator/index.js",
+  "scripts": {
+    "simulate": "node simulator/index.js",
+    "dry-run": "node simulator/index.js --dry-run"
+  },
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "dotenv": "^16.4.7",
+    "tronweb": "^6.0.4"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
