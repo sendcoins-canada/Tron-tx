@@ -1,53 +1,40 @@
 const { createTronWeb } = require('./tronClient');
-const { getTrxBalance } = require('./balanceService');
+const { getTrxBalance, getEvmNativeBalance } = require('./balanceService');
+const { createWeb3 } = require('./evmClient');
+const { getNetwork } = require('../config/networks');
+const config = require('../config');
 const logger = require('../utils/logger');
 
 /**
- * Check if a user wallet has enough TRX for gas, and fund it from the master wallet if not.
- * Ported from sendTron.js:18-25 (transactionBuilder.sendTrx pattern).
- *
- * @param {object} opts
- * @param {string} opts.network          - mainnet | shasta | nile
- * @param {string} opts.apiKey           - TronGrid API key
- * @param {string} opts.masterPrivateKey - Master wallet private key
- * @param {string} opts.masterAddress    - Master wallet address
- * @param {string} opts.userAddress      - User wallet to fund
- * @param {number} opts.minTrx           - Minimum TRX required (default 35)
+ * Check if a user wallet has enough TRX for gas, and fund from master if not.
  */
-async function checkAndFundGas({ network, apiKey, masterPrivateKey, masterAddress, userAddress, minTrx = 35 }) {
-  // 1. Check user's current TRX balance
+async function checkAndFundTrxGas({ network, apiKey, masterPrivateKey, masterAddress, userAddress, minTrx = 35 }) {
   const masterTronWeb = createTronWeb(network, masterPrivateKey, apiKey);
-  const userBalance = await getTrxBalance(masterTronWeb, userAddress);
 
-  logger.info(`User TRX balance: ${userBalance.balance} TRX`);
+  const [masterBal, userBalance] = await Promise.all([
+    getTrxBalance(masterTronWeb, masterAddress),
+    getTrxBalance(masterTronWeb, userAddress),
+  ]);
+  logger.info(`Master TRX: ${masterBal.balance}, User TRX: ${userBalance.balance}, min: ${minTrx}`);
 
   if (userBalance.balance >= minTrx) {
-    logger.success(`Sufficient gas — ${userBalance.balance} TRX >= ${minTrx} TRX minimum`);
     return { funded: false, reason: 'sufficient', balance: userBalance.balance };
   }
 
-  // 2. Calculate deficit with 2 TRX buffer
-  const deficit = minTrx - userBalance.balance + 2;
-  logger.warn(`Gas insufficient. Need ${deficit} TRX (deficit + 2 TRX buffer)`);
+  const deficit = minTrx - userBalance.balance;
+  logger.warn(`Gas insufficient. Need ${deficit} TRX to reach ${minTrx} TRX minimum`);
 
-  // 3. Check master wallet has enough
-  const masterBalance = await getTrxBalance(masterTronWeb, masterAddress);
-  if (masterBalance.balance < deficit + 1) {
+  if (masterBal.balance < deficit) {
     throw Object.assign(
-      new Error(`Master wallet too low: ${masterBalance.balance} TRX, need ${deficit + 1} TRX`),
+      new Error(`Master wallet too low: ${masterBal.balance} TRX, need ${deficit} TRX`),
       { code: 'MASTER_WALLET_LOW' }
     );
   }
 
-  // 4. Send TRX from master → user
   const sunAmount = Math.ceil(deficit * 1e6);
   logger.info(`Funding ${deficit} TRX from master → ${userAddress}...`);
 
-  const tx = await masterTronWeb.transactionBuilder.sendTrx(
-    userAddress,
-    sunAmount,
-    masterAddress
-  );
+  const tx = await masterTronWeb.transactionBuilder.sendTrx(userAddress, sunAmount, masterAddress);
   const signedTx = await masterTronWeb.trx.sign(tx, masterPrivateKey);
   const receipt = await masterTronWeb.trx.sendRawTransaction(signedTx);
 
@@ -59,13 +46,107 @@ async function checkAndFundGas({ network, apiKey, masterPrivateKey, masterAddres
   }
 
   logger.success(`Funded! TXID: ${receipt.txid}`);
+  return { funded: true, txid: receipt.txid, amount: deficit, previousBalance: userBalance.balance };
+}
 
+/**
+ * Check if user has enough native gas (BNB/ETH) and fund from master if not.
+ */
+async function checkAndFundEvmGas({ network, masterPrivateKey, masterAddress, userAddress, minGas }) {
+  const web3 = createWeb3(network);
+  const netInfo = getNetwork(network);
+  const threshold = minGas || netInfo.gasThreshold;
+  const nativeToken = netInfo.nativeToken;
+
+  const userBal = await getEvmNativeBalance(network, userAddress);
+  logger.info(`User ${nativeToken} balance: ${userBal.balance}`);
+
+  if (userBal.balance >= threshold) {
+    return { funded: false, reason: 'sufficient', balance: userBal.balance };
+  }
+
+  const deficit = threshold - userBal.balance;
+  logger.warn(`Gas insufficient. Need ${deficit} ${nativeToken}`);
+
+  const masterBal = await getEvmNativeBalance(network, masterAddress);
+  if (masterBal.balance < deficit) {
+    throw Object.assign(
+      new Error(`Master ${nativeToken} wallet too low: ${masterBal.balance}, need ${deficit}`),
+      { code: 'MASTER_WALLET_LOW' }
+    );
+  }
+
+  const weiAmount = web3.utils.toWei(String(deficit), 'ether');
+
+  const account = web3.eth.accounts.privateKeyToAccount(
+    masterPrivateKey.startsWith('0x') ? masterPrivateKey : '0x' + masterPrivateKey
+  );
+
+  const nonce = await web3.eth.getTransactionCount(masterAddress, 'pending');
+  const gasPrice = await web3.eth.getGasPrice();
+
+  const tx = {
+    from: masterAddress,
+    to: userAddress,
+    value: weiAmount,
+    gas: 21000,
+    gasPrice,
+    nonce,
+  };
+
+  const signed = await account.signTransaction(tx);
+  const receipt = await web3.eth.sendSignedTransaction(signed.rawTransaction);
+
+  logger.success(`Funded! TXID: ${receipt.transactionHash}`);
   return {
     funded: true,
-    txid: receipt.txid,
+    txid: receipt.transactionHash,
     amount: deficit,
-    previousBalance: userBalance.balance,
+    previousBalance: userBal.balance,
   };
 }
 
-module.exports = { checkAndFundGas };
+/**
+ * Ensure a user address has enough gas on any supported network.
+ */
+async function ensureGas(network, userAddress) {
+  const net = network.toLowerCase();
+
+  if (net === 'trc20') {
+    return checkAndFundTrxGas({
+      network: config.TRON_NETWORK,
+      apiKey: config.TRON_PRO_API_KEY,
+      masterPrivateKey: config.MASTER_WALLET_TRON_PRIVATE_KEY,
+      masterAddress: config.MASTER_WALLET_TRON_ADDRESS,
+      userAddress,
+      minTrx: config.MIN_TRX_FOR_GAS,
+    });
+  }
+
+  if (net === 'bep20') {
+    return checkAndFundEvmGas({
+      network: 'bep20',
+      masterPrivateKey: config.MASTER_WALLET_BSC_PRIVATE_KEY,
+      masterAddress: config.MASTER_WALLET_BSC_ADDRESS,
+      userAddress,
+      minGas: config.MIN_BNB_FOR_GAS,
+    });
+  }
+
+  if (net === 'erc20') {
+    return checkAndFundEvmGas({
+      network: 'erc20',
+      masterPrivateKey: config.MASTER_WALLET_ETH_PRIVATE_KEY,
+      masterAddress: config.MASTER_WALLET_ETH_ADDRESS,
+      userAddress,
+      minGas: config.MIN_ETH_FOR_GAS,
+    });
+  }
+
+  throw new Error(`Unsupported network for gas funding: ${network}`);
+}
+
+// Legacy alias — used by simulator/index.js CLI mode
+const checkAndFundGas = checkAndFundTrxGas;
+
+module.exports = { checkAndFundGas, checkAndFundTrxGas, checkAndFundEvmGas, ensureGas };

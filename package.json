@@ -1,16 +1,20 @@
 {
   "name": "tron-tx-simulator",
-  "version": "1.0.0",
-  "description": "Tron transaction simulator with auto gas funding for TRC20 transfers",
-  "main": "simulator/index.js",
+  "version": "2.0.0",
+  "description": "Multi-network crypto sending engine (TRC20, BEP20, ERC20) with auto gas funding",
+  "main": "index.js",
   "scripts": {
+    "start": "node server.js",
     "simulate": "node simulator/index.js",
     "dry-run": "node simulator/index.js --dry-run"
   },
   "dependencies": {
     "chalk": "^4.1.2",
     "dotenv": "^16.4.7",
-    "tronweb": "^6.0.4"
+    "express": "^5.2.1",
+    "pg": "^8.20.0",
+    "tronweb": "^6.0.4",
+    "web3": "^1.10.4"
   },
   "engines": {
     "node": ">=16.0.0"
