@@ -13,7 +13,15 @@ async function sendTrc20(tronWeb, toAddress, amount, contractAddress, feeLimit =
   const fromHex = tronWeb.address.toHex(fromAddress);
   const tokenAmount = Math.round(amount * 1e6);
 
-  logger.info(`TRC20 send: ${amount} (${tokenAmount} raw) from ${fromAddress} → ${toAddress}, contract: ${contractAddress}`);
+  logger.info(`[sendTrc20] ════════════════════════════════════════════`);
+  logger.info(`[sendTrc20] From:     ${fromAddress}`);
+  logger.info(`[sendTrc20] FromHex:  ${fromHex}`);
+  logger.info(`[sendTrc20] To:       ${toAddress}`);
+  logger.info(`[sendTrc20] Contract: ${contractAddress}`);
+  logger.info(`[sendTrc20] Amount:   ${amount} (raw: ${tokenAmount})`);
+  logger.info(`[sendTrc20] FeeLimit: ${feeLimit} SUN (${feeLimit / 1e6} TRX)`);
+  logger.info(`[sendTrc20] TronWeb fullNode: ${tronWeb.fullNode?.host || 'unknown'}`);
+  logger.info(`[sendTrc20] ════════════════════════════════════════════`);
 
   const tx = await tronWeb.transactionBuilder.triggerSmartContract(
     contractAddress,
@@ -27,13 +35,18 @@ async function sendTrc20(tronWeb, toAddress, amount, contractAddress, feeLimit =
   );
 
   if (!tx.result || !tx.result.result) {
+    logger.error(`[sendTrc20] triggerSmartContract FAILED`);
+    logger.error(`[sendTrc20] Response: ${JSON.stringify(tx, null, 2)}`);
     throw Object.assign(
       new Error(`triggerSmartContract failed: ${JSON.stringify(tx)}`),
       { code: 'CONTRACT_CALL_FAILED' }
     );
   }
+  logger.info(`[sendTrc20] triggerSmartContract OK — txID: ${tx.transaction?.txID?.substring(0, 16)}...`);
 
+  logger.info(`[sendTrc20] Signing transaction...`);
   const signedTx = await tronWeb.trx.sign(tx.transaction);
+  logger.info(`[sendTrc20] Signed. Broadcasting...`);
   const receipt = await tronWeb.trx.sendRawTransaction(signedTx);
 
   if (!receipt.result) {
@@ -41,50 +54,66 @@ async function sendTrc20(tronWeb, toAddress, amount, contractAddress, feeLimit =
       ? Buffer.from(receipt.message, 'hex').toString()
       : JSON.stringify(receipt);
 
-    logger.error(`Broadcast failed: ${errMsg}`);
+    logger.error(`[sendTrc20] Broadcast FAILED`);
+    logger.error(`[sendTrc20] Error message: ${errMsg}`);
+    logger.error(`[sendTrc20] Full receipt: ${JSON.stringify(receipt)}`);
     if (errMsg.toLowerCase().includes('account resource insufficient')) {
       throw Object.assign(new Error(errMsg), { code: 'RESOURCE_INSUFFICIENT' });
     }
     throw Object.assign(new Error(`Broadcast failed: ${errMsg}`), { code: 'BROADCAST_FAILED' });
   }
 
-  logger.info(`Broadcast accepted: ${receipt.txid}. Waiting for on-chain confirmation...`);
+  logger.info(`[sendTrc20] Broadcast accepted! TXID: ${receipt.txid}`);
+  logger.info(`[sendTrc20] Waiting for on-chain confirmation...`);
 
   // Broadcast success != execution success on TRON — must verify on-chain
   const txInfo = await waitForConfirmation(tronWeb, receipt.txid);
 
+  logger.info(`[sendTrc20] On-chain receipt: ${JSON.stringify(txInfo.receipt || {})}`);
   if (txInfo.receipt && txInfo.receipt.result !== 'SUCCESS') {
     const reason = txInfo.receipt.result || 'UNKNOWN';
-    logger.error(`On-chain execution failed: ${reason} (energy: ${txInfo.receipt.energy_usage_total || 0})`);
+    logger.error(`[sendTrc20] ON-CHAIN EXECUTION FAILED`);
+    logger.error(`[sendTrc20] Result: ${reason}`);
+    logger.error(`[sendTrc20] Energy used: ${txInfo.receipt.energy_usage_total || 0}, Bandwidth: ${txInfo.receipt.net_usage || 0}`);
+    logger.error(`[sendTrc20] Energy fee: ${txInfo.receipt.energy_fee || 0} SUN, Net fee: ${txInfo.receipt.net_fee || 0} SUN`);
     throw Object.assign(
       new Error(`Transaction confirmed but failed on-chain: ${reason}`),
       { code: 'ON_CHAIN_FAILED', txid: receipt.txid, onChainResult: reason }
     );
   }
 
-  logger.success(`Transfer confirmed on-chain! TXID: ${receipt.txid}`);
-  return { txid: receipt.txid, result: true };
+  const energyFee = (txInfo.receipt?.energy_fee || 0) / 1e6;
+  const netFee = (txInfo.receipt?.net_fee || 0) / 1e6;
+  const totalFeeTrx = energyFee + netFee;
+  logger.success(`[sendTrc20] Transfer confirmed on-chain! TXID: ${receipt.txid}`);
+  logger.info(`[sendTrc20] Energy used: ${txInfo.receipt?.energy_usage_total || 0}, Bandwidth: ${txInfo.receipt?.net_usage || 0}`);
+  logger.info(`[sendTrc20] Fee: ${totalFeeTrx.toFixed(2)} TRX (energy=${energyFee.toFixed(2)}, bandwidth=${netFee.toFixed(2)})`);
+  return { txid: receipt.txid, result: true, fee: totalFeeTrx };
 }
 
 /**
  * Poll getTransactionInfo until the tx is confirmed on-chain.
  * TRON blocks are ~3s, so we check immediately then poll every 2s up to 30s.
  */
-async function waitForConfirmation(tronWeb, txid, maxAttempts = 15, intervalMs = 2000) {
+async function waitForConfirmation(tronWeb, txid, maxAttempts = 30, intervalMs = 2000) {
+  // Give the network a moment to process before first check
+  await new Promise((r) => setTimeout(r, 3000));
+
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const info = await tronWeb.trx.getTransactionInfo(txid);
     if (info && info.id) {
-      logger.info(`Confirmed on attempt ${attempt} (block: ${info.blockNumber})`);
+      logger.info(`[confirmation] Confirmed on attempt ${attempt} (block: ${info.blockNumber})`);
       return info;
     }
 
+    logger.info(`[confirmation] Attempt ${attempt}/${maxAttempts} — not yet confirmed, waiting ${intervalMs}ms...`);
     if (attempt < maxAttempts) {
       await new Promise((r) => setTimeout(r, intervalMs));
     }
   }
 
   throw Object.assign(
-    new Error(`Transaction ${txid} not confirmed after ${maxAttempts * intervalMs / 1000}s`),
+    new Error(`Transaction ${txid} not confirmed after ${(maxAttempts * intervalMs / 1000) + 3}s`),
     { code: 'CONFIRMATION_TIMEOUT', txid }
   );
 }
@@ -143,6 +172,8 @@ async function sendErc20({ network, privateKey, toAddress, amount, token }) {
  */
 async function sendToken(network, token, privateKey, toAddress, amount, opts = {}) {
   const net = network.toLowerCase();
+  logger.info(`[sendToken] network=${net}, token=${token}, to=${toAddress}, amount=${amount}`);
+  logger.info(`[sendToken] TRON_NETWORK=${config.TRON_NETWORK}, keyPrefix=${privateKey?.substring(0, 8)}...`);
 
   if (net === 'trc20') {
     const tronWeb = opts.tronWeb || createTronWeb(
@@ -151,6 +182,8 @@ async function sendToken(network, token, privateKey, toAddress, amount, opts = {
       config.TRON_PRO_API_KEY
     );
     const contractAddr = getContractAddress(config.TRON_NETWORK, token);
+    logger.info(`[sendToken] Resolved contract for ${token} on ${config.TRON_NETWORK}: ${contractAddr}`);
+    logger.info(`[sendToken] Fee limit: ${opts.feeLimit || config.FEE_LIMIT} SUN (${(opts.feeLimit || config.FEE_LIMIT) / 1e6} TRX)`);
     return sendTrc20(tronWeb, toAddress, amount, contractAddr, opts.feeLimit || config.FEE_LIMIT);
   }
 

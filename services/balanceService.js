@@ -1,6 +1,6 @@
 const logger = require('../utils/logger');
 const { createWeb3 } = require('./evmClient');
-const { getContract, loadAbi } = require('../config/contracts');
+const { getContract, getContractAddress, loadAbi } = require('../config/contracts');
 const { getNetwork } = require('../config/networks');
 
 // ─── TRC20 (Tron) balance functions ─────────────────────────
@@ -80,8 +80,9 @@ async function getTokenBalance(network, token, address, tronWeb) {
 
   if (net === 'trc20') {
     if (!tronWeb) throw new Error('tronWeb instance required for TRC20 balance checks');
-    const contractInfo = getContract('trc20', token);
-    return getTrc20Balance(tronWeb, contractInfo.address, address);
+    const config = require('../config');
+    const contractAddr = getContractAddress(config.TRON_NETWORK, token);
+    return getTrc20Balance(tronWeb, contractAddr, address);
   }
 
   return getErc20Balance(net, token, address);

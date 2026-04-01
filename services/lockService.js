@@ -118,6 +118,13 @@ async function deductBalance(userApiKey, asset, amount, network) {
   const tableName = `azer_${coin}_wallet`;
   const { clause, params } = buildWhere(coin, userApiKey, network);
 
+  logger.info(`[DEDUCT] ════════════════════════════════════════`);
+  logger.info(`[DEDUCT] Table:   ${tableName}`);
+  logger.info(`[DEDUCT] WHERE:   ${clause}`);
+  logger.info(`[DEDUCT] Amount:  ${amount} ${asset.toUpperCase()}`);
+  logger.info(`[DEDUCT] Network: ${network || 'all'}`);
+  logger.info(`[DEDUCT] User:    ${userApiKey.substring(0, 8)}...`);
+
   const result = await pool.query(
     `UPDATE ${tableName}
      SET total_balance = total_balance - $${params.length + 1},
@@ -125,7 +132,11 @@ async function deductBalance(userApiKey, asset, amount, network) {
      WHERE ${clause}`,
     [...params, amount]
   );
-  logger.info(`Deducted ${amount} ${asset.toUpperCase()} (rows: ${result.rowCount})`);
+  logger.info(`[DEDUCT] Rows affected: ${result.rowCount}`);
+  if (result.rowCount === 0) {
+    logger.warn(`[DEDUCT] WARNING — 0 rows affected! Check if wallet exists for this user/network`);
+  }
+  logger.info(`[DEDUCT] ════════════════════════════════════════`);
 }
 
 module.exports = { lockBalance, unlockBalance, deductBalance };

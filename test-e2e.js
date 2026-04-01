@@ -19,7 +19,7 @@ const { sendCrypto } = require('./services/walletService');
 const logger = require('./utils/logger');
 const chalk = require('chalk');
 
-const RECIPIENT_ADDRESS = 'TSX6tFiduWZtZX5cqG489v7VPKyczvxnfm';
+const RECIPIENT_ADDRESS = 'THZkY44qncyKCrkfJ8DnYvzMEPHyewujou';
 const SEND_AMOUNT = 1;
 const FAKE_BALANCE = 50;
 const COIN = 'USDT';

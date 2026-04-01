@@ -9,20 +9,34 @@ const logger = require('../utils/logger');
  * Check if a user wallet has enough TRX for gas, and fund from master if not.
  */
 async function checkAndFundTrxGas({ network, apiKey, masterPrivateKey, masterAddress, userAddress, minTrx = 35 }) {
+  logger.info(`[GAS] ════════════════════════════════════════════`);
+  logger.info(`[GAS] Check & Fund TRX Gas`);
+  logger.info(`[GAS] Network:       ${network}`);
+  logger.info(`[GAS] Master addr:   ${masterAddress}`);
+  logger.info(`[GAS] Master key:    ${masterPrivateKey?.substring(0, 8)}...`);
+  logger.info(`[GAS] User addr:     ${userAddress}`);
+  logger.info(`[GAS] Min TRX:       ${minTrx}`);
+  logger.info(`[GAS] API key:       ${apiKey?.substring(0, 8)}...`);
+  logger.info(`[GAS] ════════════════════════════════════════════`);
+
   const masterTronWeb = createTronWeb(network, masterPrivateKey, apiKey);
+  logger.info(`[GAS] TronWeb fullNode: ${masterTronWeb.fullNode?.host || 'unknown'}`);
 
   const [masterBal, userBalance] = await Promise.all([
     getTrxBalance(masterTronWeb, masterAddress),
     getTrxBalance(masterTronWeb, userAddress),
   ]);
-  logger.info(`Master TRX: ${masterBal.balance}, User TRX: ${userBalance.balance}, min: ${minTrx}`);
+  logger.info(`[GAS] Master TRX balance: ${masterBal.balance} TRX`);
+  logger.info(`[GAS] User TRX balance:   ${userBalance.balance} TRX`);
+  logger.info(`[GAS] Minimum required:   ${minTrx} TRX`);
 
   if (userBalance.balance >= minTrx) {
+    logger.success(`[GAS] Sufficient — ${userBalance.balance} TRX >= ${minTrx} TRX. No funding needed.`);
     return { funded: false, reason: 'sufficient', balance: userBalance.balance };
   }
 
   const deficit = minTrx - userBalance.balance;
-  logger.warn(`Gas insufficient. Need ${deficit} TRX to reach ${minTrx} TRX minimum`);
+  logger.warn(`[GAS] INSUFFICIENT — user has ${userBalance.balance}, needs ${minTrx}, deficit=${deficit} TRX`);
 
   if (masterBal.balance < deficit) {
     throw Object.assign(
@@ -32,20 +46,29 @@ async function checkAndFundTrxGas({ network, apiKey, masterPrivateKey, masterAdd
   }
 
   const sunAmount = Math.ceil(deficit * 1e6);
-  logger.info(`Funding ${deficit} TRX from master → ${userAddress}...`);
+  logger.info(`[GAS] Sending ${deficit} TRX (${sunAmount} SUN) from master → ${userAddress}`);
 
+  logger.info(`[GAS] Building sendTrx transaction...`);
   const tx = await masterTronWeb.transactionBuilder.sendTrx(userAddress, sunAmount, masterAddress);
+  logger.info(`[GAS] Transaction built. Signing...`);
   const signedTx = await masterTronWeb.trx.sign(tx, masterPrivateKey);
+  logger.info(`[GAS] Signed. Broadcasting...`);
   const receipt = await masterTronWeb.trx.sendRawTransaction(signedTx);
 
   if (!receipt.result) {
+    logger.error(`[GAS] Funding broadcast FAILED`);
+    logger.error(`[GAS] Receipt: ${JSON.stringify(receipt)}`);
+    if (receipt.message) {
+      logger.error(`[GAS] Message: ${Buffer.from(receipt.message, 'hex').toString()}`);
+    }
     throw Object.assign(
       new Error(`Funding transaction failed: ${JSON.stringify(receipt)}`),
       { code: 'FUNDING_FAILED' }
     );
   }
 
-  logger.success(`Funded! TXID: ${receipt.txid}`);
+  logger.success(`[GAS] Funded! TXID: ${receipt.txid}`);
+  logger.info(`[GAS] Explorer: https://shasta.tronscan.org/#/transaction/${receipt.txid}`);
   return { funded: true, txid: receipt.txid, amount: deficit, previousBalance: userBalance.balance };
 }
 

@@ -99,8 +99,8 @@ async function createTransfer(transfer) {
   const sql = `
     INSERT INTO wallet_transfers
     (reference, user_api_key, recipient_keychain, recipient_name, recipient_wallet_address,
-     asset, network, amount, fee, status, note, metadata, ip_address, device, created_at)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+     asset, network, amount, fee, status, note, metadata, ip_address, device, created_at, tx_hash)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
     RETURNING transfer_id, reference, status, created_at
   `;
 
@@ -120,6 +120,7 @@ async function createTransfer(transfer) {
     transfer.ip || null,
     transfer.device || null,
     createdAt,
+    transfer.txHash || null,
   ];
 
   const result = await query(sql, values);
@@ -148,6 +149,61 @@ async function updateTransferStatus(reference, status, metadata = {}) {
   );
 }
 
+// ─── Transfer lookups ───────────────────────────────────────
+
+async function getTransferByReference(reference) {
+  const result = await query(
+    'SELECT * FROM wallet_transfers WHERE reference = $1 LIMIT 1',
+    [reference]
+  );
+  return result.rows[0] || null;
+}
+
+async function findWalletOwnerByAddress(coinSymbol, address, network) {
+  const coin = validateCoin(coinSymbol);
+  const table = `azer_${coin}_wallet`;
+  const result = await query(
+    `SELECT user_api_key, wallet_address, network FROM ${table}
+     WHERE wallet_address = $1 AND network = $2 LIMIT 1`,
+    [address, network.toLowerCase()]
+  );
+  return result.rows[0] || null;
+}
+
+async function findReceiveBySendReference(sendReference, recipientApiKey) {
+  const result = await query(
+    `SELECT reference FROM wallet_transfers
+     WHERE metadata->>'sendReference' = $1 AND user_api_key = $2 LIMIT 1`,
+    [sendReference, recipientApiKey]
+  );
+  return result.rows[0] || null;
+}
+
+async function getTransfersByUser(userApiKey, { type, limit = 50, offset = 0 } = {}) {
+  let sql = 'SELECT * FROM wallet_transfers WHERE user_api_key = $1';
+  const params = [userApiKey];
+
+  if (type === 'receive') {
+    sql += ` AND metadata->>'type' = 'receive'`;
+  } else if (type === 'send') {
+    sql += ` AND (metadata->>'type' IS NULL OR metadata->>'type' != 'receive')`;
+  }
+
+  sql += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+  params.push(limit, offset);
+
+  const result = await query(sql, params);
+  return result.rows;
+}
+
+async function findByIdempotencyKey(idempotencyKey, userApiKey) {
+  const result = await query(
+    `SELECT * FROM wallet_transfers WHERE metadata->>'idempotencyKey' = $1 AND user_api_key = $2 LIMIT 1`,
+    [idempotencyKey, userApiKey]
+  );
+  return result.rows[0] || null;
+}
+
 module.exports = {
   query,
   validateCoin,
@@ -158,4 +214,9 @@ module.exports = {
   getPrivateKeyByHash,
   createTransfer,
   updateTransferStatus,
+  getTransferByReference,
+  findWalletOwnerByAddress,
+  findReceiveBySendReference,
+  getTransfersByUser,
+  findByIdempotencyKey,
 };
