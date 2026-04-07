@@ -17,6 +17,8 @@ const { sendToken } = require('./transferService');
 const { lockBalance, unlockBalance, deductBalance } = require('./lockService');
 const { SUPPORTED_COINS } = require('../config/networks');
 const logger = require('../utils/logger');
+const { recordFee, notifySuperAdmin } = require('../utils/platformService');
+const { sendCryptoTransferEmail } = require('../utils/mailService');
 
 /**
  * Main entry point for sending crypto.
@@ -86,6 +88,10 @@ async function sendCrypto({
     return { success: false, error: `Unsupported coin: ${normalizedCoin}` };
   }
 
+  if (amount < 5) {
+    return { success: false, error: 'Minimum send amount is 5 USDT', code: 'MINIMUM_NOT_MET' };
+  }
+
   try {
     // ─── 1. VALIDATE USER ─────────────────────────────────────
     const user = await queries.getUserByApiKey(userApiKey);
@@ -95,6 +101,24 @@ async function sendCrypto({
     logger.info(`User found: ${user.user_email}, ban=${user.account_ban}`);
     if (user.account_ban === 'true' || user.account_ban === true) {
       return { success: false, error: 'Account is suspended' };
+    }
+
+    const isVerified = user.verify_user === '1' || user.verify_user === 1;
+    const maxSendAmount = isVerified ? 10000 : 5000;
+
+    if (amount > maxSendAmount) {
+      if (!isVerified) {
+        return {
+          success: false,
+          error: `Unverified accounts can only send up to ${maxSendAmount} USDT. Please verify your identity to increase your limit to 10,000 USDT.`,
+          code: 'VERIFICATION_REQUIRED',
+        };
+      }
+      return {
+        success: false,
+        error: `Maximum send amount is ${maxSendAmount} USDT per transaction`,
+        code: 'LIMIT_EXCEEDED',
+      };
     }
 
     const email = userEmail || user.user_email;
@@ -140,26 +164,33 @@ async function sendCrypto({
     onChainBalance = balResult.balance;
     logger.info(`On-chain balance: ${onChainBalance} ${normalizedCoin}`);
 
-    // ─── 6. DETERMINE STRATEGY ────────────────────────────────
-    const totalAvailable = dbAvailable + onChainBalance;
-    logger.info(`Total available: ${totalAvailable} (DB=${dbAvailable} + onChain=${onChainBalance}), need=${amount}`);
+    // ─── 6. CALCULATE PLATFORM FEE ─────────────────────────────
+    let platformFee = 2;
+    if (amount > 500) platformFee = 5;
+    else if (amount === 500) platformFee = 4;
+    const totalNeeded = amount + platformFee;
+    logger.info(`Platform fee: ${platformFee} ${normalizedCoin}, total needed: ${totalNeeded}`);
 
-    if (totalAvailable < amount) {
-      logger.error(`Insufficient balance — total=${totalAvailable}, required=${amount}`);
+    // ─── 7. DETERMINE STRATEGY ────────────────────────────────
+    const totalAvailable = dbAvailable + onChainBalance;
+    logger.info(`Total available: ${totalAvailable} (DB=${dbAvailable} + onChain=${onChainBalance}), need=${totalNeeded}`);
+
+    if (totalAvailable < totalNeeded) {
+      logger.error(`Insufficient balance — total=${totalAvailable}, required=${totalNeeded} (amount=${amount} + fee=${platformFee})`);
       return {
         success: false,
-        error: `Insufficient ${normalizedCoin} balance. Available: ${totalAvailable.toFixed(2)}, Required: ${amount}`,
+        error: `Insufficient ${normalizedCoin} balance. Available: ${totalAvailable.toFixed(2)}, Required: ${totalNeeded} (${amount} + ${platformFee} fee)`,
       };
     }
 
-    if (onChainBalance >= amount) {
+    if (onChainBalance >= totalNeeded) {
       strategy = 'DIRECT_SEND';
     } else if (onChainBalance > 0) {
       strategy = 'HYBRID_SEND';
     } else {
       strategy = 'MASTER_SEND';
     }
-    logger.info(`Strategy: ${strategy} (DB=${dbAvailable}, onChain=${onChainBalance}, amount=${amount})`);
+    logger.info(`Strategy: ${strategy} (DB=${dbAvailable}, onChain=${onChainBalance}, totalNeeded=${totalNeeded})`);
 
     // ─── 7. CREATE TRANSFER RECORD ────────────────────────────
     const transfer = await queries.createTransfer({
@@ -171,7 +202,7 @@ async function sendCrypto({
       walletAddress: recipientAddress,
       recipientName: recipientName || 'External recipient',
       note: note || null,
-      metadata: { strategy, origin: 'crypto-engine', dbAvailable, onChainBalance, ...(idempotencyKey && { idempotencyKey }) },
+      metadata: { strategy, origin: 'crypto-engine', dbAvailable, onChainBalance, platformFee, ...(idempotencyKey && { idempotencyKey }) },
       ip,
       device,
     });
@@ -181,17 +212,20 @@ async function sendCrypto({
     // ─── 8. EXECUTE ───────────────────────────────────────────
     let txid;
 
+    let feeTxid = null;
+
     if (strategy === 'DIRECT_SEND') {
       // ──────────────────────────────────────────────────────────
-      // DIRECT_SEND: on-chain covers full amount
-      // User wallet → recipient. No DB involvement.
+      // DIRECT_SEND: on-chain covers amount + fee
+      // TX 1: User wallet → master (platform fee)
+      // TX 2: User wallet → recipient (send amount)
       // ──────────────────────────────────────────────────────────
-      logger.info(`[DIRECT_SEND] Sending ${amount} ${normalizedCoin} from user wallet → ${recipientAddress}`);
+      logger.info(`[DIRECT_SEND] Sending ${amount} ${normalizedCoin} + ${platformFee} fee from user wallet`);
 
       const privateKey = await queries.getPrivateKeyByHash(targetWallet.hash);
       if (!privateKey) throw Object.assign(new Error('Unable to retrieve wallet key'), { code: 'KEY_NOT_FOUND' });
 
-      // Fund gas
+      // Fund gas (need enough for two TXs)
       const gasResult = await ensureGas(normalizedNetwork, targetWallet.wallet_address);
       if (gasResult.funded) {
         logger.info(`[DIRECT_SEND] Gas funded: ${gasResult.amount} TRX → ${targetWallet.wallet_address}`);
@@ -201,7 +235,20 @@ async function sendCrypto({
         logger.info(`[DIRECT_SEND] Gas sufficient (${gasResult.balance} TRX)`);
       }
 
-      // Send from user wallet → recipient
+      // TX 1: Send platform fee from user wallet → master
+      const masterAddress = getMasterAddress(normalizedNetwork);
+      logger.info(`[DIRECT_SEND] TX1: Sending ${platformFee} ${normalizedCoin} fee → master (${masterAddress})`);
+      const feeResult = await sendToken(normalizedNetwork, normalizedCoin, privateKey, masterAddress, platformFee);
+      feeTxid = feeResult.txid;
+      logger.info(`[DIRECT_SEND] Fee sent! TXID: ${feeTxid}`);
+      await queries.updateTransferStatus(transferRef, 'pending', { feeTxid, feeAmount: platformFee });
+
+      // Wait for fee TX to confirm before sending the main amount
+      logger.info(`[DIRECT_SEND] Waiting 3s for fee TX confirmation...`);
+      await new Promise((r) => setTimeout(r, 3000));
+
+      // TX 2: Send amount from user wallet → recipient
+      logger.info(`[DIRECT_SEND] TX2: Sending ${amount} ${normalizedCoin} → ${recipientAddress}`);
       const result = await sendToken(normalizedNetwork, normalizedCoin, privateKey, recipientAddress, amount);
       txid = result.txid;
       logger.info(`[DIRECT_SEND] Sent! TXID: ${txid}`);
@@ -214,8 +261,8 @@ async function sendCrypto({
       // 3. Master sends full amount → recipient
       // 4. Deduct DB portion
       // ──────────────────────────────────────────────────────────
-      dbLockAmount = amount - onChainBalance;
-      logger.info(`[HYBRID_SEND] Starting — onChain=${onChainBalance}, dbNeeded=${dbLockAmount}, total=${amount}`);
+      dbLockAmount = totalNeeded - onChainBalance;
+      logger.info(`[HYBRID_SEND] Starting — onChain=${onChainBalance}, dbNeeded=${dbLockAmount}, total=${totalNeeded} (amount=${amount} + fee=${platformFee})`);
 
       // Lock DB portion
       const lockResult = await lockBalance(userApiKey, normalizedCoin, normalizedNetwork, dbLockAmount);
@@ -267,8 +314,8 @@ async function sendCrypto({
       // MASTER_SEND: on-chain = 0, DB covers full amount
       // Master sends directly to recipient. No user wallet involvement.
       // ──────────────────────────────────────────────────────────
-      dbLockAmount = amount;
-      logger.info(`[MASTER_SEND] Starting — dbAvailable=${dbAvailable}, amount=${amount}`);
+      dbLockAmount = totalNeeded;
+      logger.info(`[MASTER_SEND] Starting — dbAvailable=${dbAvailable}, totalNeeded=${totalNeeded} (amount=${amount} + fee=${platformFee})`);
 
       // Lock full amount in DB
       const lockResult = await lockBalance(userApiKey, normalizedCoin, normalizedNetwork, dbLockAmount);
@@ -323,8 +370,15 @@ async function sendCrypto({
       network: normalizedNetwork,
       coin: normalizedCoin,
       amount,
+      fee: platformFee,
+      total: totalNeeded,
       recipientAddress,
     };
+
+    if (feeTxid) {
+      response.feeTxid = feeTxid;
+      response.feeExplorerUrl = txUrl(feeTxid);
+    }
 
     if (reclaimTxid) {
       response.reclaimTxid = reclaimTxid;
@@ -335,6 +389,8 @@ async function sendCrypto({
       txid,
       explorerUrl: txUrl(txid),
       strategy,
+      platformFee,
+      feeTxid: feeTxid || undefined,
       reclaimTxid: reclaimTxid || undefined,
       reclaimExplorerUrl: reclaimTxid ? txUrl(reclaimTxid) : undefined,
     });
@@ -343,7 +399,41 @@ async function sendCrypto({
     logger.info(`Explorer: ${txUrl(txid)}`);
     if (reclaimTxid) logger.info(`Reclaim Explorer: ${txUrl(reclaimTxid)}`);
 
-    // ─── 10. CHECK IF RECIPIENT IS INTERNAL ──────────────────────
+    // ─── 10. RECORD FEE AS PROFIT ────────────────────────────────
+    const maskedAddr = `${recipientAddress.slice(0, 6)}...${recipientAddress.slice(-4)}`;
+    recordFee({
+      transactionType: 'crypto_send_fee',
+      source: 'crypto_send',
+      sourceReference: transferRef,
+      currency: 'USD',
+      amount: platformFee,
+      usdEquivalent: platformFee,
+      description: `Platform fee for ${amount} ${normalizedCoin} send to ${maskedAddr}`,
+      userApiKey,
+    }).catch(() => {});
+
+    // ─── 11. NOTIFY SUPER ADMIN ──────────────────────────────────
+    notifySuperAdmin({
+      title: `Fee collected: ${platformFee} USDT`,
+      message: `Platform fee of ${platformFee} USDT collected from ${email} for sending ${amount} ${normalizedCoin} to ${maskedAddr}`,
+      metadata: { reference: transferRef, fee: platformFee, amount, asset: normalizedCoin, userEmail: email },
+    }).catch(() => {});
+
+    // ─── 12. SEND EMAIL ──────────────────────────────────────────
+    sendCryptoTransferEmail({
+      email,
+      firstName: user.first_name,
+      amount,
+      asset: normalizedCoin,
+      network: normalizedNetwork,
+      recipientAddress,
+      txid,
+      explorerUrl: txUrl(txid),
+      fee: platformFee,
+      reference: transferRef,
+    }).catch(() => {});
+
+    // ─── 13. CHECK IF RECIPIENT IS INTERNAL ──────────────────────
     let recipientWallet = null;
     try {
       recipientWallet = await queries.findWalletOwnerByAddress(normalizedCoin, recipientAddress, normalizedNetwork);
@@ -391,6 +481,7 @@ async function sendCrypto({
       await queries.updateTransferStatus(transferRef, 'failed', {
         error: err.message,
         code: err.code,
+        feeTxid: feeTxid || undefined,
         reclaimTxid: reclaimTxid || undefined,
       }).catch(() => {});
     }

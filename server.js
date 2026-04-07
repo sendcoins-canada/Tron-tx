@@ -246,6 +246,30 @@ app.get('/api/transfers', async (req, res) => {
   }
 });
 
+// ─── GET /api/fees ──────────────────────────────────────────
+
+app.get('/api/fees', (req, res) => {
+  const { amount } = req.query;
+  const numAmount = parseFloat(amount);
+
+  if (!numAmount || numAmount <= 0) {
+    return res.status(400).json({ success: false, error: 'amount is required and must be positive' });
+  }
+
+  let fee = 2;
+  if (numAmount > 500) fee = 5;
+  else if (numAmount === 500) fee = 4;
+
+  return res.json({
+    success: true,
+    amount: numAmount,
+    fee,
+    total: numAmount + fee,
+    sendable: numAmount - fee,
+    minimum: 5,
+  });
+});
+
 // ─── POST /api/send ─────────────────────────────────────────
 
 /**
@@ -384,6 +408,7 @@ app.listen(PORT, () => {
   logger.info(`Balance:  GET  http://localhost:${PORT}/api/balance`);
   logger.info(`Transfer: GET  http://localhost:${PORT}/api/transfer/:ref`);
   logger.info(`History:  GET  http://localhost:${PORT}/api/transfers`);
+  logger.info(`Fees:     GET  http://localhost:${PORT}/api/fees`);
   logger.info(`Send:     POST http://localhost:${PORT}/api/send`);
   logger.info(`Master:   GET  http://localhost:${PORT}/api/master/health`);
 });
