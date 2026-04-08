@@ -390,25 +390,29 @@ app.get('/api/master/health', async (req, res) => {
   }
 });
 
-// ─── Start ──────────────────────────────────────────────────
+// ─── Start (only when run directly, not when imported by Vercel) ───
 
-app.listen(PORT, () => {
-  const { getContractAddress } = require('./config/contracts');
-  logger.info(`════════════════════════════════════════════════════`);
-  logger.info(`Crypto TX Engine listening on port ${PORT}`);
-  logger.info(`════════════════════════════════════════════════════`);
-  logger.info(`TRON_NETWORK:    ${config.TRON_NETWORK}`);
-  logger.info(`Master address:  ${config.MASTER_WALLET_TRON_ADDRESS}`);
-  logger.info(`Master key:      ${config.MASTER_WALLET_TRON_PRIVATE_KEY?.substring(0, 8)}...`);
-  logger.info(`USDT contract:   ${getContractAddress(config.TRON_NETWORK, 'USDT')}`);
-  logger.info(`Fee limit:       ${config.FEE_LIMIT} SUN (${config.FEE_LIMIT / 1e6} TRX)`);
-  logger.info(`Min TRX for gas: ${config.MIN_TRX_FOR_GAS}`);
-  logger.info(`════════════════════════════════════════════════════`);
-  logger.info(`Health:   GET  http://localhost:${PORT}/api/health`);
-  logger.info(`Balance:  GET  http://localhost:${PORT}/api/balance`);
-  logger.info(`Transfer: GET  http://localhost:${PORT}/api/transfer/:ref`);
-  logger.info(`History:  GET  http://localhost:${PORT}/api/transfers`);
-  logger.info(`Fees:     GET  http://localhost:${PORT}/api/fees`);
-  logger.info(`Send:     POST http://localhost:${PORT}/api/send`);
-  logger.info(`Master:   GET  http://localhost:${PORT}/api/master/health`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    const { getContractAddress } = require('./config/contracts');
+    logger.info(`════════════════════════════════════════════════════`);
+    logger.info(`Crypto TX Engine listening on port ${PORT}`);
+    logger.info(`════════════════════════════════════════════════════`);
+    logger.info(`TRON_NETWORK:    ${config.TRON_NETWORK}`);
+    logger.info(`Master address:  ${config.MASTER_WALLET_TRON_ADDRESS}`);
+    logger.info(`Master key:      ${config.MASTER_WALLET_TRON_PRIVATE_KEY?.substring(0, 8)}...`);
+    logger.info(`USDT contract:   ${getContractAddress(config.TRON_NETWORK, 'USDT')}`);
+    logger.info(`Fee limit:       ${config.FEE_LIMIT} SUN (${config.FEE_LIMIT / 1e6} TRX)`);
+    logger.info(`Min TRX for gas: ${config.MIN_TRX_FOR_GAS}`);
+    logger.info(`════════════════════════════════════════════════════`);
+    logger.info(`Health:   GET  http://localhost:${PORT}/api/health`);
+    logger.info(`Balance:  GET  http://localhost:${PORT}/api/balance`);
+    logger.info(`Transfer: GET  http://localhost:${PORT}/api/transfer/:ref`);
+    logger.info(`History:  GET  http://localhost:${PORT}/api/transfers`);
+    logger.info(`Fees:     GET  http://localhost:${PORT}/api/fees`);
+    logger.info(`Send:     POST http://localhost:${PORT}/api/send`);
+    logger.info(`Master:   GET  http://localhost:${PORT}/api/master/health`);
+  });
+}
+
+module.exports = app;
