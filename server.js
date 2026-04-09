@@ -15,6 +15,7 @@
  */
 
 const express = require('express');
+const { waitUntil } = require('@vercel/functions');
 const config = require('./config');
 const queries = require('./db/queries');
 const { sendCrypto } = require('./services/walletService');
@@ -358,8 +359,8 @@ app.post('/api/send', requireApiSecret, async (req, res) => {
         message: 'Transfer initiated. Poll GET /api/transfer/:reference for status.',
       });
 
-      // Process in background with pre-generated reference (don't await)
-      sendCrypto({ ...sendParams, preGeneratedReference: reference }).then(async (result) => {
+      // Process in background — waitUntil keeps the Vercel function alive after response
+      const backgroundTask = sendCrypto({ ...sendParams, preGeneratedReference: reference }).then(async (result) => {
         if (!result.success) {
           logger.error(`[ASYNC] Background send returned failure for ref=${reference}: ${result.error}`);
           await queries.updateTransferStatus(reference, 'failed', {
@@ -374,6 +375,7 @@ app.post('/api/send', requireApiSecret, async (req, res) => {
           code: err.code,
         }).catch(() => {});
       });
+      waitUntil(backgroundTask);
       return;
     }
 

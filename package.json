@@ -9,6 +9,7 @@
     "dry-run": "node simulator/index.js --dry-run"
   },
   "dependencies": {
+    "@vercel/functions": "^3.4.3",
     "chalk": "^4.1.2",
     "dotenv": "^16.4.7",
     "express": "^5.2.1",
