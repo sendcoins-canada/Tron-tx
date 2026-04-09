@@ -26,6 +26,17 @@ const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 4100;
+const API_SECRET = process.env.API_SECRET;
+
+// ─── Auth middleware for mutating endpoints ─────────────────
+
+function requireApiSecret(req, res, next) {
+  if (!API_SECRET) return next();
+  if (req.headers['x-api-secret'] !== API_SECRET) {
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
+  next();
+}
 
 // ─── Helpers ────────────────────────────────────────────────
 
@@ -278,11 +289,12 @@ app.get('/api/fees', (req, res) => {
  * Body: { userApiKey, recipientAddress, amount, coin, network, recipientName?, note?, idempotencyKey? }
  * Response: { success, txid?, reference?, strategy?, error?, elapsed }
  */
-app.post('/api/send', async (req, res) => {
+app.post('/api/send', requireApiSecret, async (req, res) => {
   const startTime = Date.now();
 
   try {
     const { userApiKey, recipientAddress, amount, coin, network, recipientName, note, idempotencyKey } = req.body;
+    const asyncMode = req.body.async === true || req.query.async === 'true';
 
     const errors = [];
     if (!userApiKey || typeof userApiKey !== 'string') errors.push('userApiKey is required');
@@ -295,9 +307,9 @@ app.post('/api/send', async (req, res) => {
       return res.status(400).json({ success: false, errors });
     }
 
-    logger.info(`POST /api/send — ${coin} ${network} ${amount} → ${recipientAddress.substring(0, 10)}...`);
+    logger.info(`POST /api/send — ${coin} ${network} ${amount} → ${recipientAddress.substring(0, 10)}... (async=${asyncMode})`);
 
-    const result = await sendCrypto({
+    const sendParams = {
       userApiKey,
       recipientAddress,
       amount: parseFloat(amount),
@@ -308,7 +320,65 @@ app.post('/api/send', async (req, res) => {
       ip: req.ip,
       device: req.headers['user-agent'],
       idempotencyKey,
-    });
+    };
+
+    if (asyncMode) {
+      // Async mode: create record first, return immediately, process in background
+      const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+      let reference = '';
+      for (let i = 0; i < 24; i++) reference += chars.charAt(Math.floor(Math.random() * chars.length));
+
+      // Calculate fee for the response (same logic as walletService)
+      let fee = 2;
+      if (sendParams.amount > 500) fee = 5;
+      else if (sendParams.amount === 500) fee = 4;
+
+      // Create transfer record immediately so polling works even if background fails
+      await queries.createTransfer({
+        reference,
+        userApiKey,
+        asset: coin.toUpperCase(),
+        network: network.toLowerCase(),
+        amount: sendParams.amount,
+        walletAddress: recipientAddress,
+        recipientName: recipientName || 'External recipient',
+        note: note || null,
+        metadata: { origin: 'crypto-engine-async', platformFee: fee },
+        ip: req.ip,
+        device: req.headers['user-agent'],
+      });
+
+      // Return immediately with reference
+      res.json({
+        success: true,
+        status: 'processing',
+        reference,
+        fee,
+        total: sendParams.amount + fee,
+        message: 'Transfer initiated. Poll GET /api/transfer/:reference for status.',
+      });
+
+      // Process in background with pre-generated reference (don't await)
+      sendCrypto({ ...sendParams, preGeneratedReference: reference }).then(async (result) => {
+        if (!result.success) {
+          logger.error(`[ASYNC] Background send returned failure for ref=${reference}: ${result.error}`);
+          await queries.updateTransferStatus(reference, 'failed', {
+            error: result.error,
+            code: result.code,
+          }).catch(() => {});
+        }
+      }).catch(async (err) => {
+        logger.error(`[ASYNC] Background send threw for ref=${reference}: ${err.message}`);
+        await queries.updateTransferStatus(reference, 'failed', {
+          error: err.message,
+          code: err.code,
+        }).catch(() => {});
+      });
+      return;
+    }
+
+    // Sync mode: wait for full completion (original behavior)
+    const result = await sendCrypto(sendParams);
 
     const elapsed = Date.now() - startTime;
 

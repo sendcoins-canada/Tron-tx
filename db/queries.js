@@ -92,7 +92,7 @@ function createRandomString(length) {
  * Create a wallet_transfers record (same schema as sql.walletTransfer.create).
  */
 async function createTransfer(transfer) {
-  const reference = createRandomString(24);
+  const reference = transfer.reference || createRandomString(24);
   const createdAt = Math.floor(Date.now() / 1000);
   const status = transfer.status || 'pending';
 

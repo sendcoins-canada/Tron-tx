@@ -35,6 +35,7 @@ async function sendCrypto({
   recipientName,
   note,
   idempotencyKey,
+  preGeneratedReference,
 }) {
   const normalizedCoin = coin.toUpperCase();
   const normalizedNetwork = network.toLowerCase();
@@ -42,6 +43,7 @@ async function sendCrypto({
   let transferRef = null;
   let strategy = null;
   let reclaimTxid = null;
+  let feeTxid = null;
   let dbLocked = false;
   let dbLockAmount = 0;
 
@@ -192,27 +194,35 @@ async function sendCrypto({
     }
     logger.info(`Strategy: ${strategy} (DB=${dbAvailable}, onChain=${onChainBalance}, totalNeeded=${totalNeeded})`);
 
-    // ─── 7. CREATE TRANSFER RECORD ────────────────────────────
-    const transfer = await queries.createTransfer({
-      userApiKey,
-      userEmail: email,
-      asset: normalizedCoin,
-      network: normalizedNetwork,
-      amount,
-      walletAddress: recipientAddress,
-      recipientName: recipientName || 'External recipient',
-      note: note || null,
-      metadata: { strategy, origin: 'crypto-engine', dbAvailable, onChainBalance, platformFee, ...(idempotencyKey && { idempotencyKey }) },
-      ip,
-      device,
-    });
-    transferRef = transfer.reference;
-    logger.info(`Transfer record created: ref=${transferRef}`);
+    // ─── 7. CREATE OR REUSE TRANSFER RECORD ────────────────────
+    if (preGeneratedReference) {
+      // Async mode: record already created by server.js, just update metadata
+      transferRef = preGeneratedReference;
+      await queries.updateTransferStatus(transferRef, 'pending', {
+        strategy, dbAvailable, onChainBalance, platformFee,
+        ...(idempotencyKey && { idempotencyKey }),
+      });
+      logger.info(`Transfer record reused: ref=${transferRef}`);
+    } else {
+      const transfer = await queries.createTransfer({
+        userApiKey,
+        userEmail: email,
+        asset: normalizedCoin,
+        network: normalizedNetwork,
+        amount,
+        walletAddress: recipientAddress,
+        recipientName: recipientName || 'External recipient',
+        note: note || null,
+        metadata: { strategy, origin: 'crypto-engine', dbAvailable, onChainBalance, platformFee, ...(idempotencyKey && { idempotencyKey }) },
+        ip,
+        device,
+      });
+      transferRef = transfer.reference;
+      logger.info(`Transfer record created: ref=${transferRef}`);
+    }
 
     // ─── 8. EXECUTE ───────────────────────────────────────────
     let txid;
-
-    let feeTxid = null;
 
     if (strategy === 'DIRECT_SEND') {
       // ──────────────────────────────────────────────────────────
