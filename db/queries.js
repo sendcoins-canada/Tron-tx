@@ -204,6 +204,47 @@ async function findByIdempotencyKey(idempotencyKey, userApiKey) {
   return result.rows[0] || null;
 }
 
+// ─── Deposit tracking ────────────────────────────────────────
+
+/**
+ * Get all active wallet addresses for a coin+network (for deposit polling).
+ */
+async function getActiveWallets(coinSymbol, network) {
+  const coin = validateCoin(coinSymbol);
+  const table = `azer_${coin}_wallet`;
+  const result = await query(
+    `SELECT w.wallet_id, w.user_api_key, w.wallet_address, w.network, u.user_email
+     FROM ${table} w
+     LEFT JOIN send_coin_user u ON u.api_key = w.user_api_key
+     WHERE w.network = $1 AND w.wallet_address IS NOT NULL`,
+    [network.toLowerCase()]
+  );
+  return result.rows;
+}
+
+/**
+ * Dedup check — prevent recording the same on-chain TX twice.
+ */
+async function findTransferByExternalTxHash(txHash) {
+  const result = await query(
+    `SELECT transfer_id FROM wallet_transfers WHERE metadata->>'externalTxHash' = $1 LIMIT 1`,
+    [txHash]
+  );
+  return result.rows[0] || null;
+}
+
+/**
+ * Credit a wallet's balance when an external deposit is detected.
+ */
+async function creditWalletBalance(coinSymbol, userApiKey, network, amount) {
+  const coin = validateCoin(coinSymbol);
+  const table = `azer_${coin}_wallet`;
+  await query(
+    `UPDATE ${table} SET balance = balance + $1 WHERE user_api_key = $2 AND network = $3`,
+    [parseFloat(amount), userApiKey, network.toLowerCase()]
+  );
+}
+
 module.exports = {
   query,
   validateCoin,
@@ -219,4 +260,7 @@ module.exports = {
   findReceiveBySendReference,
   getTransfersByUser,
   findByIdempotencyKey,
+  getActiveWallets,
+  findTransferByExternalTxHash,
+  creditWalletBalance,
 };

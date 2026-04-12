@@ -91,7 +91,7 @@ async function sendCrypto({
   }
 
   if (amount < 5) {
-    return { success: false, error: 'Minimum send amount is 5 USDT', code: 'MINIMUM_NOT_MET' };
+    return { success: false, error: `Minimum send amount is 5 ${normalizedCoin}`, code: 'MINIMUM_NOT_MET' };
   }
 
   try {
@@ -112,13 +112,13 @@ async function sendCrypto({
       if (!isVerified) {
         return {
           success: false,
-          error: `Unverified accounts can only send up to ${maxSendAmount} USDT. Please verify your identity to increase your limit to 10,000 USDT.`,
+          error: `Unverified accounts can only send up to ${maxSendAmount} ${normalizedCoin}. Please verify your identity to increase your limit to 10,000 ${normalizedCoin}.`,
           code: 'VERIFICATION_REQUIRED',
         };
       }
       return {
         success: false,
-        error: `Maximum send amount is ${maxSendAmount} USDT per transaction`,
+        error: `Maximum send amount is ${maxSendAmount} ${normalizedCoin} per transaction`,
         code: 'LIMIT_EXCEEDED',
       };
     }
@@ -424,8 +424,8 @@ async function sendCrypto({
 
     // ─── 11. NOTIFY SUPER ADMIN ──────────────────────────────────
     notifySuperAdmin({
-      title: `Fee collected: ${platformFee} USDT`,
-      message: `Platform fee of ${platformFee} USDT collected from ${email} for sending ${amount} ${normalizedCoin} to ${maskedAddr}`,
+      title: `Fee collected: ${platformFee} ${normalizedCoin}`,
+      message: `Platform fee of ${platformFee} ${normalizedCoin} collected from ${email} for sending ${amount} ${normalizedCoin} to ${maskedAddr}`,
       metadata: { reference: transferRef, fee: platformFee, amount, asset: normalizedCoin, userEmail: email },
     }).catch(() => {});
 

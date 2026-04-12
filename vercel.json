@@ -14,5 +14,11 @@
       "src": "/(.*)",
       "dest": "api/index.js"
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/check-deposits",
+      "schedule": "*/15 * * * *"
+    }
   ]
 }

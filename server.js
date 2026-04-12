@@ -464,6 +464,31 @@ app.get('/api/master/health', async (req, res) => {
 
 // ─── Start (only when run directly, not when imported by Vercel) ───
 
+// ─── Deposit tracking cron ───────────────────────────────────────────────────
+/**
+ * GET /api/cron/check-deposits
+ * Called by Vercel cron every 15 minutes (see vercel.json).
+ * Also callable manually with Authorization: Bearer $CRON_SECRET.
+ */
+app.get('/api/cron/check-deposits', async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret) {
+    const auth = req.headers.authorization;
+    if (auth !== `Bearer ${cronSecret}`) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+  }
+
+  try {
+    const { processDeposits } = require('./utils/depositDetector');
+    const stats = await processDeposits();
+    res.json({ success: true, ...stats });
+  } catch (err) {
+    logger.error(`[CRON] Deposit check failed: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 if (require.main === module) {
   app.listen(PORT, () => {
     const { getContractAddress } = require('./config/contracts');
