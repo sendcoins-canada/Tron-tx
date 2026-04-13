@@ -19,6 +19,7 @@ const { SUPPORTED_COINS } = require('../config/networks');
 const logger = require('../utils/logger');
 const { recordFee, notifySuperAdmin } = require('../utils/platformService');
 const { sendCryptoTransferEmail } = require('../utils/mailService');
+const { getSetting } = require('../utils/settingsService');
 
 /**
  * Main entry point for sending crypto.
@@ -167,9 +168,10 @@ async function sendCrypto({
     logger.info(`On-chain balance: ${onChainBalance} ${normalizedCoin}`);
 
     // ─── 6. CALCULATE PLATFORM FEE ─────────────────────────────
-    let platformFee = 2;
-    if (amount > 500) platformFee = 5;
-    else if (amount === 500) platformFee = 4;
+    const feeConfig = await getSetting('crypto_send_fees', { below500: 2, at500: 4, above500: 5 });
+    let platformFee = feeConfig.below500;
+    if (amount > 500) platformFee = feeConfig.above500;
+    else if (amount === 500) platformFee = feeConfig.at500;
     const totalNeeded = amount + platformFee;
     logger.info(`Platform fee: ${platformFee} ${normalizedCoin}, total needed: ${totalNeeded}`);
 

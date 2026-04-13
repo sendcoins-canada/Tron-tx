@@ -204,6 +204,16 @@ async function findByIdempotencyKey(idempotencyKey, userApiKey) {
   return result.rows[0] || null;
 }
 
+// ─── System settings ─────────────────────────────────────────
+
+async function getSystemSetting(key) {
+  const result = await query(
+    'SELECT setting_value, setting_type FROM system_settings WHERE setting_key = $1 LIMIT 1',
+    [key]
+  );
+  return result.rows[0] || null;
+}
+
 // ─── Deposit tracking ────────────────────────────────────────
 
 /**
@@ -260,6 +270,7 @@ module.exports = {
   findReceiveBySendReference,
   getTransfersByUser,
   findByIdempotencyKey,
+  getSystemSetting,
   getActiveWallets,
   findTransferByExternalTxHash,
   creditWalletBalance,
