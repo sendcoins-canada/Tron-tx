@@ -489,6 +489,82 @@ app.get('/api/cron/check-deposits', async (req, res) => {
   }
 });
 
+// ─── POST /api/withdraw-move ──────────────────────────────────
+
+/**
+ * POST /api/withdraw-move
+ *
+ * Moves a user's crypto to the platform master wallet as part of a crypto-to-NGN
+ * withdrawal. Caller is always the sendcoins backend — not an end user directly.
+ *
+ * Body:   { userApiKey, coin, network, amount, withdrawalReference, idempotencyKey }
+ * Response: { success, strategy, onchainTxHash, onchainAmount, dbDebitAmount,
+ *             transferReference, withdrawalReference, elapsed, idempotent? }
+ */
+app.post('/api/withdraw-move', requireApiSecret, async (req, res) => {
+  const { userApiKey, coin, network, amount, withdrawalReference, idempotencyKey } = req.body;
+
+  const errors = [];
+  if (!userApiKey        || typeof userApiKey        !== 'string') errors.push('userApiKey is required');
+  if (!coin              || typeof coin              !== 'string') errors.push('coin is required (e.g. USDT, USDC)');
+  if (!network           || typeof network           !== 'string') errors.push('network is required (e.g. trc20, bep20, erc20)');
+  if (amount == null     || typeof amount            !== 'number' || amount <= 0) errors.push('amount must be a positive number');
+  if (!withdrawalReference || typeof withdrawalReference !== 'string') errors.push('withdrawalReference is required');
+  if (!idempotencyKey    || typeof idempotencyKey    !== 'string') errors.push('idempotencyKey is required');
+
+  if (errors.length) {
+    return res.status(400).json({ success: false, errors });
+  }
+
+  const started = Date.now();
+  logger.info(`════════════════════════════════════════════`);
+  logger.info(`POST /api/withdraw-move RECEIVED`);
+  logger.info(`  User:      ${userApiKey}`);
+  logger.info(`  Coin:      ${coin}`);
+  logger.info(`  Network:   ${network}`);
+  logger.info(`  Amount:    ${amount}`);
+  logger.info(`  WdRef:     ${withdrawalReference}`);
+  logger.info(`  IdempKey:  ${idempotencyKey}`);
+  logger.info(`  API Secret header present: ${!!req.headers['x-api-secret']}`);
+  logger.info(`════════════════════════════════════════════`);
+  try {
+    const withdrawMoveService = require('./services/withdrawMoveService');
+    const result = await withdrawMoveService.executeWithdrawMove({
+      userApiKey,
+      coin,
+      network,
+      amount: Number(amount),
+      withdrawalReference,
+      idempotencyKey,
+    });
+    logger.info(`════════════════════════════════════════════`);
+    logger.info(`POST /api/withdraw-move SUCCESS`);
+    logger.info(`  Strategy:    ${result.strategy}`);
+    logger.info(`  TransferRef: ${result.transferReference}`);
+    logger.info(`  OnchainTx:   ${result.onchainTxHash || 'N/A (DB_WITHDRAW)'}`);
+    logger.info(`  OnchainAmt:  ${result.onchainAmount}`);
+    logger.info(`  DbDebitAmt:  ${result.dbDebitAmount}`);
+    logger.info(`  Elapsed:     ${Date.now() - started}ms`);
+    logger.info(`════════════════════════════════════════════`);
+    return res.json({ ...result, elapsed: Date.now() - started });
+  } catch (err) {
+    logger.error(`════════════════════════════════════════════`);
+    logger.error(`POST /api/withdraw-move FAILED`);
+    logger.error(`  Error:   ${err.message}`);
+    logger.error(`  Code:    ${err.code || 'N/A'}`);
+    logger.error(`  Stack:   ${err.stack?.split('\n')[1]?.trim() || 'N/A'}`);
+    logger.error(`  Elapsed: ${Date.now() - started}ms`);
+    logger.error(`════════════════════════════════════════════`);
+    const status = err.code === 'KEY_NOT_FOUND' ? 500 : 400;
+    return res.status(status).json({
+      success: false,
+      error:   err.message,
+      code:    err.code || 'EXECUTION_FAILED',
+      elapsed: Date.now() - started,
+    });
+  }
+});
+
 if (require.main === module) {
   app.listen(PORT, () => {
     const { getContractAddress } = require('./config/contracts');
