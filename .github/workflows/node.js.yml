@@ -1,4 +1,4 @@
-name: Backend_CICD
+name: Tron_Tx_CICD
 
 on:
   push:
