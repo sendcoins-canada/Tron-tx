@@ -64,12 +64,8 @@ jobs:
 
           # API Security
           API_SECRET=0894cd7b39803b00d83c6116aba483809b13f2d2785e135325eddda9ee1c8274
-
-
-
+          
           CRON_SECRET=5b2a0c235b9cdc33cb564611a20ffd1c6543bd75bf9507b8d1b41bdac4d5e15c
-
-
 
           RESEND_API_KEY=re_bKUr53bk_6YC1co3wM27xYCnfxbgAd7Rs
           # cat .env
