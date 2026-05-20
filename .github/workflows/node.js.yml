@@ -26,9 +26,9 @@ jobs:
       - name: 'Create env file'
         run: |
           touch .env
-          # Database (same as sendcoins)
-          DB_USER='postgres'
-          # cat .env
+            # Database (same as sendcoins)
+            DB_USER='postgres'
+            # cat .env
 
       - name: Start or reload app with PM2
         run: |
