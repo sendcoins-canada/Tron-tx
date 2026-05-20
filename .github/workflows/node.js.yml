@@ -29,6 +29,13 @@ jobs:
             # Database (same as sendcoins)
             DB_USER='postgres'
             # cat .env
+             touch .env
+          echo DB_USER=postgres >> .env
+          echo DB_HOST=database-1.cihiwyaqc8kv.us-east-1.rds.amazonaws.com >> .env
+          echo DB_NAME=sendcoin_pgdb >> .env
+          echo DB_PASSWORD=Sendcoins________INC1. >> .env
+          echo DB_PORT=5432 >> .env
+          # cat .env
 
       - name: Start or reload app with PM2
         run: |
