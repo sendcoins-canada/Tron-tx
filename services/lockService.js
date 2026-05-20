@@ -59,6 +59,16 @@ async function lockBalance(userApiKey, asset, network, amount) {
     const lockedAmount = parseFloat(wallet.locked_amount) || 0;
     const availableBalance = totalBalance - lockedAmount;
 
+    logger.info(`[LOCK] [BALANCE CONVERSION] ─────────────────────────────────`);
+    logger.info(`[LOCK] [BALANCE CONVERSION] Raw total_balance: "${wallet.total_balance}" → parsed: ${totalBalance}`);
+    logger.info(`[LOCK] [BALANCE CONVERSION] Raw locked_amount: "${wallet.locked_amount}" → parsed: ${lockedAmount}`);
+    logger.info(`[LOCK] [BALANCE CONVERSION] Available = total - locked = ${totalBalance} - ${lockedAmount} = ${availableBalance}`);
+    logger.info(`[LOCK] [BALANCE CONVERSION] Requested lock amount: ${amount} ${asset.toUpperCase()}`);
+    logger.info(`[LOCK] [BALANCE CONVERSION] Can lock: ${amount <= availableBalance ? 'YES' : 'NO'} (surplus/deficit: ${(availableBalance - amount).toFixed(8)})`);
+    logger.info(`[LOCK] [BALANCE CONVERSION] Post-lock locked_amount would be: ${lockedAmount} + ${amount} = ${lockedAmount + amount}`);
+    logger.info(`[LOCK] [BALANCE CONVERSION] Post-lock available would be: ${availableBalance} - ${amount} = ${availableBalance - amount}`);
+    logger.info(`[LOCK] [BALANCE CONVERSION] ─────────────────────────────────`);
+
     if (amount > availableBalance) {
       await client.query('ROLLBACK');
       return {

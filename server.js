@@ -123,6 +123,18 @@ app.get('/api/balance', async (req, res) => {
     const dbAvailable = dbTotal - dbLocked;
 
     const networkInfo = NETWORKS[normalizedNetwork];
+    const totalAvailable = dbAvailable + tokenResult.balance;
+
+    logger.info(`[BALANCE QUERY] ─────────────────────────────────`);
+    logger.info(`[BALANCE QUERY] User: ${userApiKey.substring(0, 8)}... | ${normalizedCoin} on ${normalizedNetwork}`);
+    logger.info(`[BALANCE QUERY] Wallet: ${wallet.wallet_address}`);
+    logger.info(`[BALANCE QUERY] Raw DB total_balance: "${wallet.total_balance}" → parsed: ${dbTotal}`);
+    logger.info(`[BALANCE QUERY] Raw DB locked_amount: "${wallet.locked_amount}" → parsed: ${dbLocked}`);
+    logger.info(`[BALANCE QUERY] DB available = total - locked = ${dbTotal} - ${dbLocked} = ${dbAvailable}`);
+    logger.info(`[BALANCE QUERY] On-chain ${normalizedCoin}: ${tokenResult.balance}`);
+    logger.info(`[BALANCE QUERY] Gas (${networkInfo.nativeToken}): ${nativeResult.balance} (threshold: ${networkInfo.gasThreshold}, sufficient: ${nativeResult.balance >= networkInfo.gasThreshold})`);
+    logger.info(`[BALANCE QUERY] Total available = DB + onChain = ${dbAvailable} + ${tokenResult.balance} = ${totalAvailable}`);
+    logger.info(`[BALANCE QUERY] ─────────────────────────────────`);
 
     const elapsed = Date.now() - startTime;
     return res.json({
@@ -137,7 +149,7 @@ app.get('/api/balance', async (req, res) => {
         token: networkInfo.nativeToken,
         sufficient: nativeResult.balance >= networkInfo.gasThreshold,
       },
-      totalAvailable: dbAvailable + tokenResult.balance,
+      totalAvailable,
       elapsed: `${elapsed}ms`,
     });
 
@@ -272,6 +284,13 @@ app.get('/api/fees', (req, res) => {
   if (numAmount > 500) fee = 5;
   else if (numAmount === 500) fee = 4;
 
+  logger.info(`[FEE QUERY] ─────────────────────────────────`);
+  logger.info(`[FEE QUERY] Requested amount: ${numAmount}`);
+  logger.info(`[FEE QUERY] Fee tier: ${numAmount > 500 ? 'above500 (>500)' : numAmount === 500 ? 'at500 (=500)' : 'below500 (<500)'} → fee = ${fee}`);
+  logger.info(`[FEE QUERY] Total with fee:  ${numAmount} + ${fee} = ${numAmount + fee}`);
+  logger.info(`[FEE QUERY] Sendable after fee: ${numAmount} - ${fee} = ${numAmount - fee}`);
+  logger.info(`[FEE QUERY] ─────────────────────────────────`);
+
   return res.json({
     success: true,
     amount: numAmount,
@@ -333,6 +352,7 @@ app.post('/api/send', requireApiSecret, async (req, res) => {
       let fee = 2;
       if (sendParams.amount > 500) fee = 5;
       else if (sendParams.amount === 500) fee = 4;
+      logger.info(`[ASYNC FEE CALC] Amount: ${sendParams.amount}, tier: ${sendParams.amount > 500 ? 'above500' : sendParams.amount === 500 ? 'at500' : 'below500'} → fee = ${fee}, total = ${sendParams.amount + fee}`);
 
       // Create transfer record immediately so polling works even if background fails
       await queries.createTransfer({

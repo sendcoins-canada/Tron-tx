@@ -175,7 +175,11 @@ async function executeWithdrawMove({ userApiKey, coin, network, amount, withdraw
   const dbTotal     = parseFloat(wallet.total_balance) || 0;
   const dbLockd     = parseFloat(wallet.locked_amount) || 0;
   const dbAvailable = dbTotal - dbLockd;
-  logger.info(`[withdrawMove] DB balance: total=${dbTotal}, locked=${dbLockd}, available=${dbAvailable}`);
+  logger.info(`[withdrawMove] [BALANCE CONVERSION] ─────────────────────────────────`);
+  logger.info(`[withdrawMove] [BALANCE CONVERSION] Raw DB total_balance:  "${wallet.total_balance}" → parsed: ${dbTotal}`);
+  logger.info(`[withdrawMove] [BALANCE CONVERSION] Raw DB locked_amount:  "${wallet.locked_amount}" → parsed: ${dbLockd}`);
+  logger.info(`[withdrawMove] [BALANCE CONVERSION] DB available = total - locked = ${dbTotal} - ${dbLockd} = ${dbAvailable}`);
+  logger.info(`[withdrawMove] [BALANCE CONVERSION] ─────────────────────────────────`);
 
   // On-chain balance (trc20 requires a tronWeb instance for the contract call)
   let tronWeb = null;
@@ -185,12 +189,20 @@ async function executeWithdrawMove({ userApiKey, coin, network, amount, withdraw
   }
   const balResult     = await getTokenBalance(normalizedNetwork, normalizedCoin, wallet.wallet_address, tronWeb);
   const onChainBalance = balResult.balance;
-  logger.info(`[withdrawMove] On-chain balance: ${onChainBalance} ${normalizedCoin}`);
+  logger.info(`[withdrawMove] [ON-CHAIN BALANCE] Raw result: ${JSON.stringify(balResult)}`);
+  logger.info(`[withdrawMove] [ON-CHAIN BALANCE] ${onChainBalance} ${normalizedCoin} on ${normalizedNetwork} at ${wallet.wallet_address}`);
 
   const totalAvailable = dbAvailable + onChainBalance;
-  logger.info(`[withdrawMove] Total available: ${totalAvailable} (DB=${dbAvailable} + onChain=${onChainBalance}), need=${amount}`);
+  logger.info(`[withdrawMove] [STRATEGY DECISION] ─────────────────────────────────`);
+  logger.info(`[withdrawMove] [STRATEGY DECISION] DB available:     ${dbAvailable} ${normalizedCoin}`);
+  logger.info(`[withdrawMove] [STRATEGY DECISION] On-chain balance:  ${onChainBalance} ${normalizedCoin}`);
+  logger.info(`[withdrawMove] [STRATEGY DECISION] Total available = DB + onChain = ${dbAvailable} + ${onChainBalance} = ${totalAvailable} ${normalizedCoin}`);
+  logger.info(`[withdrawMove] [STRATEGY DECISION] Amount needed:     ${amount} ${normalizedCoin}`);
+  logger.info(`[withdrawMove] [STRATEGY DECISION] Surplus/Deficit:   ${(totalAvailable - amount).toFixed(6)} ${normalizedCoin}`);
 
   if (amount > totalAvailable) {
+    logger.error(`[withdrawMove] [STRATEGY DECISION] INSUFFICIENT — available ${totalAvailable} < needed ${amount} (shortfall: ${(amount - totalAvailable).toFixed(6)})`);
+    logger.info(`[withdrawMove] [STRATEGY DECISION] ─────────────────────────────────`);
     throw Object.assign(
       new Error(
         `Insufficient ${normalizedCoin} balance. Available: ${totalAvailable.toFixed(6)}, Required: ${amount}`
@@ -203,12 +215,16 @@ async function executeWithdrawMove({ userApiKey, coin, network, amount, withdraw
   let strategy;
   if (onChainBalance >= amount) {
     strategy = 'ON_CHAIN_WITHDRAW';
+    logger.info(`[withdrawMove] [STRATEGY DECISION] → ON_CHAIN_WITHDRAW (onChain ${onChainBalance} >= needed ${amount}, send directly to master)`);
   } else if (onChainBalance > 0) {
     strategy = 'HYBRID_WITHDRAW';
+    const dbPortion = amount - onChainBalance;
+    logger.info(`[withdrawMove] [STRATEGY DECISION] → HYBRID_WITHDRAW (onChain ${onChainBalance} < needed ${amount}, DB covers ${dbPortion})`);
   } else {
     strategy = 'DB_WITHDRAW';
+    logger.info(`[withdrawMove] [STRATEGY DECISION] → DB_WITHDRAW (onChain = 0, entire ${amount} deducted from DB, no blockchain TX)`);
   }
-  logger.info(`[withdrawMove] Strategy: ${strategy}`);
+  logger.info(`[withdrawMove] [STRATEGY DECISION] ─────────────────────────────────`);
 
   // ─── 6. MASTER WALLET VALIDATION ─────────────────────────────
   // DB_WITHDRAW never touches the master wallet, but we still validate it is

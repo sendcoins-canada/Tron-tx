@@ -154,7 +154,11 @@ async function sendCrypto({
     const dbTotal = parseFloat(targetWallet.total_balance) || 0;
     const dbLockd = parseFloat(targetWallet.locked_amount) || 0;
     const dbAvailable = dbTotal - dbLockd;
-    logger.info(`DB balance: total=${dbTotal}, locked=${dbLockd}, available=${dbAvailable}`);
+    logger.info(`[BALANCE CONVERSION] ─────────────────────────────────`);
+    logger.info(`[BALANCE CONVERSION] Raw DB total_balance:  "${targetWallet.total_balance}" → parsed: ${dbTotal}`);
+    logger.info(`[BALANCE CONVERSION] Raw DB locked_amount:  "${targetWallet.locked_amount}" → parsed: ${dbLockd}`);
+    logger.info(`[BALANCE CONVERSION] DB available = total - locked = ${dbTotal} - ${dbLockd} = ${dbAvailable}`);
+    logger.info(`[BALANCE CONVERSION] ─────────────────────────────────`);
 
     // On-chain balance (actual USDT in blockchain wallet)
     let onChainBalance = 0;
@@ -165,7 +169,8 @@ async function sendCrypto({
     }
     const balResult = await getTokenBalance(normalizedNetwork, normalizedCoin, targetWallet.wallet_address, tronWeb);
     onChainBalance = balResult.balance;
-    logger.info(`On-chain balance: ${onChainBalance} ${normalizedCoin}`);
+    logger.info(`[ON-CHAIN BALANCE] Raw result: ${JSON.stringify(balResult)}`);
+    logger.info(`[ON-CHAIN BALANCE] ${onChainBalance} ${normalizedCoin} on ${normalizedNetwork} at ${targetWallet.wallet_address}`);
 
     // ─── 6. CALCULATE PLATFORM FEE ─────────────────────────────
     const feeConfig = await getSetting('crypto_send_fees', { below500: 2, at500: 4, above500: 5 });
@@ -173,14 +178,25 @@ async function sendCrypto({
     if (amount > 500) platformFee = feeConfig.above500;
     else if (amount === 500) platformFee = feeConfig.at500;
     const totalNeeded = amount + platformFee;
-    logger.info(`Platform fee: ${platformFee} ${normalizedCoin}, total needed: ${totalNeeded}`);
+    logger.info(`[FEE CALCULATION] ─────────────────────────────────`);
+    logger.info(`[FEE CALCULATION] Fee config from system_settings: ${JSON.stringify(feeConfig)}`);
+    logger.info(`[FEE CALCULATION] Send amount: ${amount} ${normalizedCoin}`);
+    logger.info(`[FEE CALCULATION] Fee tier hit: ${amount > 500 ? 'above500' : amount === 500 ? 'at500' : 'below500'} → fee = ${platformFee} ${normalizedCoin}`);
+    logger.info(`[FEE CALCULATION] Total needed = amount + fee = ${amount} + ${platformFee} = ${totalNeeded} ${normalizedCoin}`);
+    logger.info(`[FEE CALCULATION] ─────────────────────────────────`);
 
     // ─── 7. DETERMINE STRATEGY ────────────────────────────────
     const totalAvailable = dbAvailable + onChainBalance;
-    logger.info(`Total available: ${totalAvailable} (DB=${dbAvailable} + onChain=${onChainBalance}), need=${totalNeeded}`);
+    logger.info(`[STRATEGY DECISION] ─────────────────────────────────`);
+    logger.info(`[STRATEGY DECISION] DB available:     ${dbAvailable} ${normalizedCoin}`);
+    logger.info(`[STRATEGY DECISION] On-chain balance:  ${onChainBalance} ${normalizedCoin}`);
+    logger.info(`[STRATEGY DECISION] Total available = DB + onChain = ${dbAvailable} + ${onChainBalance} = ${totalAvailable} ${normalizedCoin}`);
+    logger.info(`[STRATEGY DECISION] Total needed:      ${totalNeeded} ${normalizedCoin} (amount=${amount} + fee=${platformFee})`);
+    logger.info(`[STRATEGY DECISION] Surplus/Deficit:   ${(totalAvailable - totalNeeded).toFixed(6)} ${normalizedCoin}`);
 
     if (totalAvailable < totalNeeded) {
-      logger.error(`Insufficient balance — total=${totalAvailable}, required=${totalNeeded} (amount=${amount} + fee=${platformFee})`);
+      logger.error(`[STRATEGY DECISION] INSUFFICIENT — available ${totalAvailable} < needed ${totalNeeded} (shortfall: ${(totalNeeded - totalAvailable).toFixed(6)})`);
+      logger.info(`[STRATEGY DECISION] ─────────────────────────────────`);
       return {
         success: false,
         error: `Insufficient ${normalizedCoin} balance. Available: ${totalAvailable.toFixed(2)}, Required: ${totalNeeded} (${amount} + ${platformFee} fee)`,
@@ -189,12 +205,16 @@ async function sendCrypto({
 
     if (onChainBalance >= totalNeeded) {
       strategy = 'DIRECT_SEND';
+      logger.info(`[STRATEGY DECISION] → DIRECT_SEND (onChain ${onChainBalance} >= totalNeeded ${totalNeeded}, user wallet sends directly)`);
     } else if (onChainBalance > 0) {
       strategy = 'HYBRID_SEND';
+      const dbPortion = totalNeeded - onChainBalance;
+      logger.info(`[STRATEGY DECISION] → HYBRID_SEND (onChain ${onChainBalance} < totalNeeded ${totalNeeded}, DB covers ${dbPortion})`);
     } else {
       strategy = 'MASTER_SEND';
+      logger.info(`[STRATEGY DECISION] → MASTER_SEND (onChain = 0, entire ${totalNeeded} from DB, master wallet sends)`);
     }
-    logger.info(`Strategy: ${strategy} (DB=${dbAvailable}, onChain=${onChainBalance}, totalNeeded=${totalNeeded})`);
+    logger.info(`[STRATEGY DECISION] ─────────────────────────────────`);
 
     // ─── 7. CREATE OR REUSE TRANSFER RECORD ────────────────────
     if (preGeneratedReference) {
