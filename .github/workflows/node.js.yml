@@ -28,46 +28,6 @@ jobs:
           touch .env
           # Database (same as sendcoins)
           DB_USER='postgres'
-          DB_HOST='database-1.cihiwyaqc8kv.us-east-1.rds.amazonaws.com'
-          DB_NAME='sendcoin_pgdb'
-          DB_PASSWORD='Sendcoins________INC1.'
-          DB_PORT=5432
-
-          # Tron Network
-          TRON_NETWORK=shasta
-          # TRON_NETWORK=mainnet
-          TRON_PRO_API_KEY=b5d8d898-3e48-414d-9336-1c861e8926a5
-          MASTER_WALLET_TRON_PRIVATE_KEY=CA860ADB139630DCFA8EE5558D5DC13B9E47384DF7B6CEF4BD4F30889EFDE214
-          MASTER_WALLET_TRON_ADDRESS=TQanRDRe3FMm4Qx5VR9iCwgW5tiyVeHsFM
-          MIN_TRX_FOR_GAS=20
-          FEE_LIMIT=20000000
-
-          # BSC Network
-          BSC_RPC_URL=https://bsc-dataseed1.binance.org
-          MASTER_WALLET_BSC_PRIVATE_KEY=
-          MASTER_WALLET_BSC_ADDRESS=
-          MIN_BNB_FOR_GAS=0.005
-
-          # Ethereum Network
-          ETH_RPC_URL=https://mainnet.infura.io/v3/96272c583c704637946557e18fb3508e
-          MASTER_WALLET_ETH_PRIVATE_KEY=
-          MASTER_WALLET_ETH_ADDRESS=
-          MIN_ETH_FOR_GAS=0.01
-
-          # Optional: CLI-only
-          SENDER_WALLET_PRIVATE_KEY=21F74827971220F42DEBA40D301EE612A194F39DA3D7680031BC6A30561DF00C
-          SENDER_WALLET_ADDRESS=THZkY44qncyKCrkfJ8DnYvzMEPHyewujou
-
-          # TRC20 contract overrides (Shasta testnet)
-          USDT_CONTRACT=TG3XXyExBkPp9nzdajDZsozEu4BkaSJozs
-          USDC_CONTRACT=TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8
-
-          # API Security
-          API_SECRET=0894cd7b39803b00d83c6116aba483809b13f2d2785e135325eddda9ee1c8274
-          
-          CRON_SECRET=5b2a0c235b9cdc33cb564611a20ffd1c6543bd75bf9507b8d1b41bdac4d5e15c
-
-          RESEND_API_KEY=re_bKUr53bk_6YC1co3wM27xYCnfxbgAd7Rs
           # cat .env
 
       - name: Start or reload app with PM2
