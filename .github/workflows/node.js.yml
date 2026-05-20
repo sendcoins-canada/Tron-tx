@@ -26,23 +26,53 @@ jobs:
       - name: 'Create env file'
         run: |
           touch .env
-            # Database (same as sendcoins)
-            DB_USER='postgres'
-            # cat .env
-             touch .env
-          echo DB_USER=postgres >> .env
-          echo DB_HOST=database-1.cihiwyaqc8kv.us-east-1.rds.amazonaws.com >> .env
-          echo DB_NAME=sendcoin_pgdb >> .env
-          echo DB_PASSWORD=Sendcoins________INC1. >> .env
+          # echo # Database (same as sendcoins) >> .env
+          echo DB_USER='postgres' >> .env
+          echo DB_HOST='database-1.cihiwyaqc8kv.us-east-1.rds.amazonaws.com' >> .env
+          echo DB_NAME='sendcoin_pgdb' >> .env
+          echo DB_PASSWORD='Sendcoins________INC1.' >> .env
           echo DB_PORT=5432 >> .env
-          # cat .env
+
+          # echo # Tron Network
+          echo TRON_NETWORK=shasta >> .env
+          # TRON_NETWORK=mainnet >> .env
+          echo TRON_PRO_API_KEY=b5d8d898-3e48-414d-9336-1c861e8926a5 >> .env
+          echo MASTER_WALLET_TRON_PRIVATE_KEY=CA860ADB139630DCFA8EE5558D5DC13B9E47384DF7B6CEF4BD4F30889EFDE214 >> .env
+          echo MASTER_WALLET_TRON_ADDRESS=TQanRDRe3FMm4Qx5VR9iCwgW5tiyVeHsFM >> .env
+          echo MIN_TRX_FOR_GAS=20 >> .env
+          echo FEE_LIMIT=20000000 >> .env
+
+          # echo # BSC Network >> .env
+          echo BSC_RPC_URL=https://bsc-dataseed1.binance.org >> .env
+          echo MASTER_WALLET_BSC_PRIVATE_KEY= >> .env
+          echo MASTER_WALLET_BSC_ADDRESS= >> .env
+          echo MIN_BNB_FOR_GAS=0.005 >> .env
+
+          # echo # Ethereum Network >> .env
+          echo ETH_RPC_URL=https://mainnet.infura.io/v3/96272c583c704637946557e18fb3508e >> .env
+          echo MASTER_WALLET_ETH_PRIVATE_KEY= >> .env
+          echo MASTER_WALLET_ETH_ADDRESS= >> .env
+          echo MIN_ETH_FOR_GAS=0.01 >> .env
+
+          # echo #`` Optional: CLI-only >> .env
+          echo SENDER_WALLET_PRIVATE_KEY=21F74827971220F42DEBA40D301EE612A194F39DA3D7680031BC6A30561DF00C >> .env
+          echo SENDER_WALLET_ADDRESS=THZkY44qncyKCrkfJ8DnYvzMEPHyewujou >> .env
+
+          # echo # TRC20 contract overrides (Shasta testnet) >> .env
+          echo USDT_CONTRACT=TG3XXyExBkPp9nzdajDZsozEu4BkaSJozs >> .env
+          echo USDC_CONTRACT=TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8 >> .env
+
+          # echo # API Security >> .env
+          echo API_SECRET=0894cd7b39803b00d83c6116aba483809b13f2d2785e135325eddda9ee1c8274 >> .env
+          echo CRON_SECRET=5b2a0c235b9cdc33cb564611a20ffd1c6543bd75bf9507b8d1b41bdac4d5e15c >> .env
+          echo RESEND_API_KEY=re_bKUr53bk_6YC1co3wM27xYCnfxbgAd7Rs >> .env
+          # echo # cat .env >> .env
 
       - name: Start or reload app with PM2
         run: |
           npm install -g pm2
-          pm2 describe Tron-tx > /dev/null && pm2 restart Tron-tx || pm2 start npm --name "Tron-tx" -- start
+          pm2 describe Tron-tx-main-one > /dev/null && pm2 restart Tron-tx-main-one || pm2 start npm --name "Tron-tx-main-one" -- start
           pm2 save
-
 
       # - name: Start/Restart app using ecosystem file
       #   run: |
