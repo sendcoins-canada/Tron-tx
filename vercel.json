@@ -18,7 +18,7 @@
   "crons": [
     {
       "path": "/api/cron/check-deposits",
-      "schedule": "*/15 * * * *"
+      "schedule": "0 0 * * *"
     }
   ]
 }
