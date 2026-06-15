@@ -135,11 +135,6 @@ async function checkAndFundEvmGas({ network, masterPrivateKey, masterAddress, us
 async function ensureGas(network, userAddress) {
   const net = network.toLowerCase();
 
-  // BTC pays its own mining fees from tx inputs — no gas funding needed
-  if (net === 'btc') {
-    return { funded: false, reason: 'btc_native_fees', balance: null };
-  }
-
   if (net === 'trc20') {
     return checkAndFundTrxGas({
       network: config.TRON_NETWORK,

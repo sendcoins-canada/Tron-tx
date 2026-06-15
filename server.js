@@ -44,10 +44,6 @@ function requireApiSecret(req, res, next) {
 function buildExplorerUrl(network, txHash) {
   if (!txHash) return null;
   const net = (network || '').toLowerCase();
-  if (net === 'btc') {
-    const btcClient = require('./services/bitcoinClient');
-    return `${btcClient.getExplorerBase()}${txHash}`;
-  }
   if (net === 'trc20') {
     const tronNet = config.TRON_NETWORK || 'mainnet';
     const base = tronNet === 'mainnet' ? 'https://tronscan.org' : `https://${tronNet}.tronscan.org`;
@@ -116,14 +112,11 @@ app.get('/api/balance', async (req, res) => {
     }
 
     const tronWeb = createTronWebIfNeeded(normalizedNetwork);
-    const isBtc = normalizedNetwork === 'btc';
 
-    // BTC is its own native token — no separate gas check needed
-    const tokenResult = await getTokenBalance(normalizedNetwork, normalizedCoin, wallet.wallet_address, tronWeb);
-    let nativeResult = { balance: 0 };
-    if (!isBtc) {
-      nativeResult = await getNativeBalance(normalizedNetwork, wallet.wallet_address, tronWeb);
-    }
+    const [tokenResult, nativeResult] = await Promise.all([
+      getTokenBalance(normalizedNetwork, normalizedCoin, wallet.wallet_address, tronWeb),
+      getNativeBalance(normalizedNetwork, wallet.wallet_address, tronWeb),
+    ]);
 
     const dbTotal = parseFloat(wallet.total_balance) || 0;
     const dbLocked = parseFloat(wallet.locked_amount) || 0;
@@ -139,38 +132,26 @@ app.get('/api/balance', async (req, res) => {
     logger.info(`[BALANCE QUERY] Raw DB locked_amount: "${wallet.locked_amount}" → parsed: ${dbLocked}`);
     logger.info(`[BALANCE QUERY] DB available = total - locked = ${dbTotal} - ${dbLocked} = ${dbAvailable}`);
     logger.info(`[BALANCE QUERY] On-chain ${normalizedCoin}: ${tokenResult.balance}`);
-    if (!isBtc) {
-      logger.info(`[BALANCE QUERY] Gas (${networkInfo.nativeToken}): ${nativeResult.balance} (threshold: ${networkInfo.gasThreshold}, sufficient: ${nativeResult.balance >= networkInfo.gasThreshold})`);
-    } else {
-      logger.info(`[BALANCE QUERY] BTC — no separate gas token (fees paid from BTC)`);
-    }
+    logger.info(`[BALANCE QUERY] Gas (${networkInfo.nativeToken}): ${nativeResult.balance} (threshold: ${networkInfo.gasThreshold}, sufficient: ${nativeResult.balance >= networkInfo.gasThreshold})`);
     logger.info(`[BALANCE QUERY] Total available = DB + onChain = ${dbAvailable} + ${tokenResult.balance} = ${totalAvailable}`);
     logger.info(`[BALANCE QUERY] ─────────────────────────────────`);
 
     const elapsed = Date.now() - startTime;
-    const response = {
+    return res.json({
       success: true,
       coin: normalizedCoin,
       network: normalizedNetwork,
       walletAddress: wallet.wallet_address,
       dbBalance: { total: dbTotal, locked: dbLocked, available: dbAvailable },
       onChainBalance: tokenResult.balance,
-      totalAvailable,
-      elapsed: `${elapsed}ms`,
-    };
-
-    if (isBtc) {
-      // BTC pays its own fees — no gas balance needed
-      response.gasBalance = { balance: null, token: 'BTC', sufficient: true, note: 'BTC pays mining fees from transaction inputs' };
-    } else {
-      response.gasBalance = {
+      gasBalance: {
         balance: nativeResult.balance,
         token: networkInfo.nativeToken,
         sufficient: nativeResult.balance >= networkInfo.gasThreshold,
-      };
-    }
-
-    return res.json(response);
+      },
+      totalAvailable,
+      elapsed: `${elapsed}ms`,
+    });
 
   } catch (err) {
     const elapsed = Date.now() - startTime;
@@ -200,64 +181,25 @@ app.get('/api/transfer/:reference', async (req, res) => {
       ? JSON.parse(transfer.metadata)
       : (transfer.metadata || {});
 
-    const transferResponse = {
-      reference: transfer.reference,
-      status: transfer.status,
-      amount: parseFloat(transfer.amount),
-      coin: transfer.asset,
-      network: transfer.network,
-      recipientAddress: transfer.recipient_wallet_address,
-      txid: transfer.tx_hash || null,
-      explorerUrl: buildExplorerUrl(transfer.network, transfer.tx_hash),
-      type: meta.type || 'send',
-      strategy: meta.strategy || null,
-      senderAddress: meta.senderAddress || null,
-      sendReference: meta.sendReference || null,
-      createdAt: transfer.created_at,
-      updatedAt: transfer.updated_at || null,
-    };
-
-    // BTC: check real-time on-chain confirmation status
-    if (transfer.network === 'btc' && transfer.tx_hash) {
-      try {
-        const btcClient = require('./services/bitcoinClient');
-        const axios = require('axios');
-        const api = btcClient.getApiBase();
-        const { data: txData } = await axios.get(`${api}/tx/${transfer.tx_hash}`, { timeout: 10000 });
-
-        if (txData.status && txData.status.confirmed) {
-          // Get current block height to calculate confirmations
-          const { data: tipHeight } = await axios.get(`${api}/blocks/tip/height`, { timeout: 5000 });
-          const confirmations = tipHeight - txData.status.block_height + 1;
-
-          transferResponse.confirmation = {
-            status: 'confirmed',
-            blockHeight: txData.status.block_height,
-            blockHash: txData.status.block_hash,
-            confirmations,
-            // Bitcoin convention: 1 = seen in block, 3 = fairly safe, 6 = fully confirmed
-            confidence: confirmations >= 6 ? 'final' : confirmations >= 3 ? 'high' : 'low',
-          };
-        } else {
-          transferResponse.confirmation = {
-            status: 'unconfirmed',
-            confirmations: 0,
-            confidence: 'pending',
-            note: 'Transaction is in the mempool, waiting to be included in a block (~10 min)',
-          };
-        }
-      } catch (err) {
-        transferResponse.confirmation = {
-          status: 'unknown',
-          error: 'Could not check on-chain status',
-        };
-      }
-    }
-
     const elapsed = Date.now() - startTime;
     return res.json({
       success: true,
-      transfer: transferResponse,
+      transfer: {
+        reference: transfer.reference,
+        status: transfer.status,
+        amount: parseFloat(transfer.amount),
+        coin: transfer.asset,
+        network: transfer.network,
+        recipientAddress: transfer.recipient_wallet_address,
+        txid: transfer.tx_hash || null,
+        explorerUrl: buildExplorerUrl(transfer.network, transfer.tx_hash),
+        type: meta.type || 'send',
+        strategy: meta.strategy || null,
+        senderAddress: meta.senderAddress || null,
+        sendReference: meta.sendReference || null,
+        createdAt: transfer.created_at,
+        updatedAt: transfer.updated_at || null,
+      },
       elapsed: `${elapsed}ms`,
     });
 
@@ -330,44 +272,14 @@ app.get('/api/transfers', async (req, res) => {
 
 // ─── GET /api/fees ──────────────────────────────────────────
 
-app.get('/api/fees', async (req, res) => {
-  const { amount, coin } = req.query;
+app.get('/api/fees', (req, res) => {
+  const { amount } = req.query;
   const numAmount = parseFloat(amount);
-  const isBtc = (coin || '').toUpperCase() === 'BTC';
 
   if (!numAmount || numAmount <= 0) {
     return res.status(400).json({ success: false, error: 'amount is required and must be positive' });
   }
 
-  if (isBtc) {
-    // BTC: dynamic mining fee + percentage-based platform fee
-    const btcClient = require('./services/bitcoinClient');
-    const feeRates = await btcClient.getRecommendedFeeRate();
-    // Estimate mining fee for a typical 1-input, 2-output tx
-    const estimatedMiningFee = btcClient.estimateFee(1, 2, feeRates.medium) / 1e8;
-    // Platform fee: 1% with min 0.00005 max 0.005
-    const platformFee = Math.max(0.00005, Math.min(0.005, numAmount * 0.01));
-
-    logger.info(`[FEE QUERY:BTC] ─────────────────────────────────`);
-    logger.info(`[FEE QUERY:BTC] Amount: ${numAmount} BTC`);
-    logger.info(`[FEE QUERY:BTC] Mining fee (medium): ${estimatedMiningFee.toFixed(8)} BTC (${feeRates.medium} sat/vB)`);
-    logger.info(`[FEE QUERY:BTC] Platform fee: ${platformFee.toFixed(8)} BTC`);
-    logger.info(`[FEE QUERY:BTC] ─────────────────────────────────`);
-
-    return res.json({
-      success: true,
-      coin: 'BTC',
-      amount: numAmount,
-      platformFee: parseFloat(platformFee.toFixed(8)),
-      miningFee: parseFloat(estimatedMiningFee.toFixed(8)),
-      totalFee: parseFloat((platformFee + estimatedMiningFee).toFixed(8)),
-      total: parseFloat((numAmount + platformFee).toFixed(8)),
-      feeRates: { fast: feeRates.fast, medium: feeRates.medium, slow: feeRates.slow, source: feeRates.source },
-      minimum: config.BTC_MIN_SEND || 0.0001,
-    });
-  }
-
-  // USDT/USDC: fixed tier fees
   let fee = 2;
   if (numAmount > 500) fee = 5;
   else if (numAmount === 500) fee = 4;
@@ -437,18 +349,10 @@ app.post('/api/send', requireApiSecret, async (req, res) => {
       for (let i = 0; i < 24; i++) reference += chars.charAt(Math.floor(Math.random() * chars.length));
 
       // Calculate fee for the response (same logic as walletService)
-      let fee;
-      const isBtcSend = coin.toUpperCase() === 'BTC' && network.toLowerCase() === 'btc';
-      if (isBtcSend) {
-        fee = Math.max(0.00005, Math.min(0.005, sendParams.amount * 0.01));
-        fee = parseFloat(fee.toFixed(8));
-        logger.info(`[ASYNC FEE CALC:BTC] Amount: ${sendParams.amount}, platform fee: ${fee} BTC`);
-      } else {
-        fee = 2;
-        if (sendParams.amount > 500) fee = 5;
-        else if (sendParams.amount === 500) fee = 4;
-        logger.info(`[ASYNC FEE CALC] Amount: ${sendParams.amount}, tier: ${sendParams.amount > 500 ? 'above500' : sendParams.amount === 500 ? 'at500' : 'below500'} → fee = ${fee}, total = ${sendParams.amount + fee}`);
-      }
+      let fee = 2;
+      if (sendParams.amount > 500) fee = 5;
+      else if (sendParams.amount === 500) fee = 4;
+      logger.info(`[ASYNC FEE CALC] Amount: ${sendParams.amount}, tier: ${sendParams.amount > 500 ? 'above500' : sendParams.amount === 500 ? 'at500' : 'below500'} → fee = ${fee}, total = ${sendParams.amount + fee}`);
 
       // Create transfer record immediately so polling works even if background fails
       await queries.createTransfer({
@@ -537,7 +441,6 @@ app.get('/api/master/health', async (req, res) => {
       trc20: config.MASTER_WALLET_TRON_ADDRESS,
       bep20: config.MASTER_WALLET_BSC_ADDRESS,
       erc20: config.MASTER_WALLET_ETH_ADDRESS,
-      btc:   config.MASTER_WALLET_BTC_ADDRESS,
     };
 
     const activeNetworks = Object.entries(masterAddresses)
@@ -550,26 +453,11 @@ app.get('/api/master/health', async (req, res) => {
 
     await Promise.all(activeNetworks.map(async ({ network, address }) => {
       const networkInfo = NETWORKS[network];
-
-      if (network === 'btc') {
-        // BTC: single balance check (BTC is its own native token)
-        const btcClient = require('./services/bitcoinClient');
-        const balResult = await btcClient.getBalance(address);
-        master[network] = {
-          address,
-          native: { token: 'BTC', balance: balResult.balance },
-          tokens: { BTC: balResult.balance },
-        };
-        return;
-      }
-
       const tw = network === 'trc20' ? tronWeb : null;
 
-      // Token networks: check native gas + each supported token
-      const tokenCoins = SUPPORTED_COINS.filter(c => c !== 'BTC'); // BTC is not a token on other networks
       const [nativeResult, ...tokenResults] = await Promise.all([
         getNativeBalance(network, address, tw),
-        ...tokenCoins.map((coin) =>
+        ...SUPPORTED_COINS.map((coin) =>
           getTokenBalance(network, coin, address, tw).then((r) => ({ coin, balance: r.balance }))
         ),
       ]);
@@ -709,11 +597,6 @@ if (require.main === module) {
     logger.info(`USDT contract:   ${getContractAddress(config.TRON_NETWORK, 'USDT')}`);
     logger.info(`Fee limit:       ${config.FEE_LIMIT} SUN (${config.FEE_LIMIT / 1e6} TRX)`);
     logger.info(`Min TRX for gas: ${config.MIN_TRX_FOR_GAS}`);
-    logger.info(`────────────────────────────────────────────────────`);
-    logger.info(`BTC_NETWORK:     ${config.BTC_NETWORK}`);
-    logger.info(`BTC master addr: ${config.MASTER_WALLET_BTC_ADDRESS || '(not configured)'}`);
-    logger.info(`BTC min send:    ${config.BTC_MIN_SEND} BTC`);
-    logger.info(`BTC max send:    ${config.BTC_MAX_SEND} BTC`);
     logger.info(`════════════════════════════════════════════════════`);
     logger.info(`Health:   GET  http://localhost:${PORT}/api/health`);
     logger.info(`Balance:  GET  http://localhost:${PORT}/api/balance`);

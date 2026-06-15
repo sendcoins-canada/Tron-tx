@@ -39,14 +39,6 @@ const config = {
   MASTER_WALLET_ETH_ADDRESS: process.env.MASTER_WALLET_ETH_ADDRESS,
   MIN_ETH_FOR_GAS: Number(process.env.MIN_ETH_FOR_GAS) || 0.01,
 
-  // Bitcoin
-  BTC_NETWORK: process.env.BTC_NETWORK || 'testnet', // mainnet | testnet | signet
-  MASTER_WALLET_BTC_PRIVATE_KEY: process.env.MASTER_WALLET_BTC_PRIVATE_KEY,
-  MASTER_WALLET_BTC_ADDRESS: process.env.MASTER_WALLET_BTC_ADDRESS,
-  BTC_FEE_RATE: process.env.BTC_FEE_RATE ? Number(process.env.BTC_FEE_RATE) : null, // sat/vByte override
-  BTC_MIN_SEND: Number(process.env.BTC_MIN_SEND) || 0.0001, // 10,000 sats
-  BTC_MAX_SEND: Number(process.env.BTC_MAX_SEND) || 1.0,
-
   // Database (same as sendcoins)
   DB_USER: process.env.DB_USER,
   DB_HOST: process.env.DB_HOST,

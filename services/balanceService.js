@@ -2,7 +2,6 @@ const logger = require('../utils/logger');
 const { createWeb3 } = require('./evmClient');
 const { getContract, getContractAddress, loadAbi } = require('../config/contracts');
 const { getNetwork } = require('../config/networks');
-const btcClient = require('./bitcoinClient');
 
 // ─── TRC20 (Tron) balance functions ─────────────────────────
 
@@ -70,18 +69,14 @@ async function getErc20Balance(network, token, address) {
 
 /**
  * Get token balance on any supported network.
- * @param {string} network - trc20 | bep20 | erc20 | btc
- * @param {string} token   - USDT | USDC | BTC
+ * @param {string} network - trc20 | bep20 | erc20
+ * @param {string} token   - USDT | USDC
  * @param {string} address - Wallet address
  * @param {TronWeb} [tronWeb] - Required for trc20 network
  * @returns {Promise<{ balance: number, address: string }>}
  */
 async function getTokenBalance(network, token, address, tronWeb) {
   const net = network.toLowerCase();
-
-  if (net === 'btc') {
-    return btcClient.getBalance(address);
-  }
 
   if (net === 'trc20') {
     if (!tronWeb) throw new Error('tronWeb instance required for TRC20 balance checks');
@@ -102,11 +97,6 @@ async function getTokenBalance(network, token, address, tronWeb) {
  */
 async function getNativeBalance(network, address, tronWeb) {
   const net = network.toLowerCase();
-
-  if (net === 'btc') {
-    // BTC is its own native token — same as getTokenBalance
-    return btcClient.getBalance(address);
-  }
 
   if (net === 'trc20') {
     if (!tronWeb) throw new Error('tronWeb instance required for TRC20');
