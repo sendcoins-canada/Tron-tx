@@ -697,6 +697,115 @@ app.post('/api/withdraw-move', requireApiSecret, async (req, res) => {
   }
 });
 
+// ─── POST /api/transfer/cancel ──────────────────────────────
+
+/**
+ * POST /api/transfer/cancel
+ *
+ * Cancels a pending_funding transfer — unlocks the user's locked balance
+ * and marks the wallet_transfers record as cancelled.
+ * Called by admin resolve (cancel action) in the sendcoins backend.
+ *
+ * Body: { reference }
+ */
+app.post('/api/transfer/cancel', requireApiSecret, async (req, res) => {
+  const { reference } = req.body;
+  if (!reference) {
+    return res.status(400).json({ success: false, error: 'reference is required' });
+  }
+
+  try {
+    const transfer = await queries.getTransferByReference(reference);
+    if (!transfer) {
+      return res.status(404).json({ success: false, error: 'Transfer not found' });
+    }
+
+    if (transfer.status !== 'pending_funding') {
+      return res.status(400).json({ success: false, error: `Cannot cancel transfer with status "${transfer.status}". Only pending_funding transfers can be cancelled.` });
+    }
+
+    const meta = typeof transfer.metadata === 'string' ? JSON.parse(transfer.metadata) : (transfer.metadata || {});
+    const coin = transfer.asset;
+    const network = transfer.network;
+    const userApiKey = transfer.user_api_key;
+
+    // Unlock the locked balance
+    const { unlockBalance } = require('./services/lockService');
+    const lockAmount = meta.shortfall != null
+      ? parseFloat(transfer.amount) + (meta.platformFee || 0)  // totalNeeded was locked
+      : parseFloat(transfer.amount);
+
+    logger.info(`[CANCEL] Unlocking ${lockAmount} ${coin} for user ${userApiKey.substring(0, 8)}...`);
+    await unlockBalance(userApiKey, coin, lockAmount, network);
+
+    // Mark transfer as cancelled
+    await queries.updateTransferStatus(reference, 'cancelled', {
+      cancelledAt: new Date().toISOString(),
+      cancelledBy: 'admin',
+    });
+
+    logger.info(`[CANCEL] Transfer ${reference} cancelled, ${lockAmount} ${coin} unlocked`);
+    return res.json({ success: true, reference, unlocked: lockAmount, coin });
+
+  } catch (err) {
+    logger.error(`[CANCEL] Failed: ${err.message}`);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/transfer/resolve ─────────────────────────────
+
+/**
+ * POST /api/transfer/resolve
+ *
+ * Resolves a pending_funding transfer — admin sent manually, provide TX hash.
+ * Deducts the locked balance and marks transfer as completed.
+ *
+ * Body: { reference, txHash }
+ */
+app.post('/api/transfer/resolve', requireApiSecret, async (req, res) => {
+  const { reference, txHash } = req.body;
+  if (!reference) return res.status(400).json({ success: false, error: 'reference is required' });
+  if (!txHash) return res.status(400).json({ success: false, error: 'txHash is required' });
+
+  try {
+    const transfer = await queries.getTransferByReference(reference);
+    if (!transfer) {
+      return res.status(404).json({ success: false, error: 'Transfer not found' });
+    }
+
+    if (transfer.status !== 'pending_funding') {
+      return res.status(400).json({ success: false, error: `Cannot resolve transfer with status "${transfer.status}". Only pending_funding transfers can be resolved.` });
+    }
+
+    const meta = typeof transfer.metadata === 'string' ? JSON.parse(transfer.metadata) : (transfer.metadata || {});
+    const coin = transfer.asset;
+    const network = transfer.network;
+    const userApiKey = transfer.user_api_key;
+
+    // Deduct the locked balance (lock → deduct converts the hold into a real deduction)
+    const { deductBalance } = require('./services/lockService');
+    const deductAmount = parseFloat(transfer.amount) + (meta.platformFee || 0);
+    logger.info(`[RESOLVE] Deducting ${deductAmount} ${coin} for user ${userApiKey.substring(0, 8)}...`);
+    await deductBalance(userApiKey, coin, deductAmount, network);
+
+    // Mark transfer as completed with the admin-provided TX hash
+    await queries.updateTransferStatus(reference, 'completed', {
+      txid: txHash,
+      resolvedAt: new Date().toISOString(),
+      resolvedBy: 'admin',
+      resolutionType: 'manual_tx',
+    });
+
+    logger.info(`[RESOLVE] Transfer ${reference} resolved with txHash=${txHash}`);
+    return res.json({ success: true, reference, txHash, deducted: deductAmount, coin });
+
+  } catch (err) {
+    logger.error(`[RESOLVE] Failed: ${err.message}`);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 if (require.main === module) {
   app.listen(PORT, () => {
     const { getContractAddress } = require('./config/contracts');
