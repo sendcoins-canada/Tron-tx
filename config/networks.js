@@ -25,10 +25,26 @@ const NETWORKS = {
     rpcDefault: null, // Must be set via ETH_RPC_URL env var
     decimals: { USDT: 6, USDC: 6 },
   },
+  btc: {
+    chain: 'bitcoin',
+    nativeToken: 'BTC',
+    gasThreshold: 0, // BTC pays its own fees from tx inputs — no gas funding
+    decimals: { BTC: 8 },
+    explorer: {
+      mainnet: 'https://blockstream.info/tx/',
+      testnet: 'https://blockstream.info/testnet/tx/',
+      signet:  'https://blockstream.info/signet/tx/',
+    },
+    api: {
+      mainnet: 'https://blockstream.info/api',
+      testnet: 'https://blockstream.info/testnet/api',
+      signet:  'https://blockstream.info/signet/api',
+    },
+  },
 };
 
 const SUPPORTED_NETWORKS = Object.keys(NETWORKS);
-const SUPPORTED_COINS = ['USDT', 'USDC'];
+const SUPPORTED_COINS = ['USDT', 'USDC', 'BTC'];
 
 function getNetwork(network) {
   const net = NETWORKS[network.toLowerCase()];

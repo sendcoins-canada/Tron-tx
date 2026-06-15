@@ -16,9 +16,11 @@ const { ensureGas } = require('./fundingService');
 const { sendToken } = require('./transferService');
 const { lockBalance, unlockBalance, deductBalance } = require('./lockService');
 const { SUPPORTED_COINS } = require('../config/networks');
+const btcClient = require('./bitcoinClient');
 const logger = require('../utils/logger');
 const { recordFee, notifySuperAdmin } = require('../utils/platformService');
-const { sendCryptoTransferEmail } = require('../utils/mailService');
+const { sendCryptoTransferEmail, sendBtcTransferInitiatedEmail, sendAdminInsufficientBalanceEmail } = require('../utils/mailService');
+const { getBtcUsdPrice } = require('../utils/priceService');
 const { getSetting } = require('../utils/settingsService');
 
 /**
@@ -91,8 +93,24 @@ async function sendCrypto({
     return { success: false, error: `Unsupported coin: ${normalizedCoin}` };
   }
 
-  if (amount < 5) {
-    return { success: false, error: `Minimum send amount is 5 ${normalizedCoin}`, code: 'MINIMUM_NOT_MET' };
+  const isBtc = normalizedCoin === 'BTC' && normalizedNetwork === 'btc';
+  let minSend;
+  if (isBtc) {
+    const btcMinUsd = await getSetting('btc_min_send_usd', 10);
+    const btcPrice = await getBtcUsdPrice();
+    minSend = parseFloat((btcMinUsd / btcPrice).toFixed(8));
+    logger.info(`[BTC MIN] $${btcMinUsd} USD / $${btcPrice} BTC price = ${minSend} BTC minimum`);
+  } else {
+    minSend = 5;
+  }
+  if (amount < minSend) {
+    return {
+      success: false,
+      error: isBtc
+        ? `Minimum send amount is $10 worth of BTC (currently ${minSend} BTC)`
+        : `Minimum send amount is ${minSend} ${normalizedCoin}`,
+      code: 'MINIMUM_NOT_MET',
+    };
   }
 
   try {
@@ -107,10 +125,13 @@ async function sendCrypto({
     }
 
     const isVerified = user.verify_user === '1' || user.verify_user === 1;
-    const maxSendAmount = isVerified ? 10000 : 5000;
+    // BTC limits are in BTC (not USD like USDT/USDC)
+    const maxSendAmount = isBtc
+      ? (config.BTC_MAX_SEND || 1.0)   // default 1 BTC max per tx
+      : (isVerified ? 10000 : 5000);    // USDT/USDC in token units
 
     if (amount > maxSendAmount) {
-      if (!isVerified) {
+      if (!isVerified && !isBtc) {
         return {
           success: false,
           error: `Unverified accounts can only send up to ${maxSendAmount} ${normalizedCoin}. Please verify your identity to increase your limit to 10,000 ${normalizedCoin}.`,
@@ -160,28 +181,54 @@ async function sendCrypto({
     logger.info(`[BALANCE CONVERSION] DB available = total - locked = ${dbTotal} - ${dbLockd} = ${dbAvailable}`);
     logger.info(`[BALANCE CONVERSION] ─────────────────────────────────`);
 
-    // On-chain balance (actual USDT in blockchain wallet)
+    // On-chain balance (actual crypto in blockchain wallet)
     let onChainBalance = 0;
     let tronWeb = null;
     if (normalizedNetwork === 'trc20') {
       const { createTronWeb } = require('./tronClient');
       tronWeb = createTronWeb(config.TRON_NETWORK, config.MASTER_WALLET_TRON_PRIVATE_KEY, config.TRON_PRO_API_KEY);
     }
+    // BTC uses Blockstream API (no TronWeb/Web3 needed)
     const balResult = await getTokenBalance(normalizedNetwork, normalizedCoin, targetWallet.wallet_address, tronWeb);
     onChainBalance = balResult.balance;
     logger.info(`[ON-CHAIN BALANCE] Raw result: ${JSON.stringify(balResult)}`);
     logger.info(`[ON-CHAIN BALANCE] ${onChainBalance} ${normalizedCoin} on ${normalizedNetwork} at ${targetWallet.wallet_address}`);
 
     // ─── 6. CALCULATE PLATFORM FEE ─────────────────────────────
-    const feeConfig = await getSetting('crypto_send_fees', { below500: 2, at500: 4, above500: 5 });
-    let platformFee = feeConfig.below500;
-    if (amount > 500) platformFee = feeConfig.above500;
-    else if (amount === 500) platformFee = feeConfig.at500;
-    const totalNeeded = amount + platformFee;
+    let platformFee;
+    if (isBtc) {
+      // BTC platform fee: last TX mining fee + configurable markup, with min/max guardrails
+      const markupPercent = await getSetting('btc_fee_markup_percent', 15);
+      const lastMiningFee = await queries.getLastBtcMiningFee();
+      const btcFeeConfig = await getSetting('btc_send_fees', { percent: 1, min: 0.00005, max: 0.005 });
+
+      if (lastMiningFee && lastMiningFee.feeBtc > 0) {
+        platformFee = lastMiningFee.feeBtc * (1 + markupPercent / 100);
+        logger.info(`[FEE CALCULATION] BTC fee source: last TX mining fee ${lastMiningFee.feeBtc} BTC + ${markupPercent}% markup = ${platformFee} BTC`);
+      } else {
+        // Fallback: estimate from current fee rates
+        const feeRates = await btcClient.getRecommendedFeeRate();
+        const estimatedSats = btcClient.estimateFee(2, 2, feeRates.medium);
+        const estimatedBtc = estimatedSats / 1e8;
+        platformFee = estimatedBtc * (1 + markupPercent / 100);
+        logger.info(`[FEE CALCULATION] BTC fee source: estimated ${estimatedSats} sats (${estimatedBtc} BTC) + ${markupPercent}% markup = ${platformFee} BTC`);
+      }
+
+      // Apply min/max guardrails
+      platformFee = Math.max(btcFeeConfig.min, Math.min(btcFeeConfig.max, platformFee));
+      platformFee = parseFloat(platformFee.toFixed(8));
+    } else {
+      const feeConfig = await getSetting('crypto_send_fees', { below500: 2, at500: 4, above500: 5 });
+      platformFee = feeConfig.below500;
+      if (amount > 500) platformFee = feeConfig.above500;
+      else if (amount === 500) platformFee = feeConfig.at500;
+    }
+    const totalNeeded = isBtc
+      ? parseFloat((amount + platformFee).toFixed(8))
+      : amount + platformFee;
     logger.info(`[FEE CALCULATION] ─────────────────────────────────`);
-    logger.info(`[FEE CALCULATION] Fee config from system_settings: ${JSON.stringify(feeConfig)}`);
     logger.info(`[FEE CALCULATION] Send amount: ${amount} ${normalizedCoin}`);
-    logger.info(`[FEE CALCULATION] Fee tier hit: ${amount > 500 ? 'above500' : amount === 500 ? 'at500' : 'below500'} → fee = ${platformFee} ${normalizedCoin}`);
+    logger.info(`[FEE CALCULATION] Fee type: ${isBtc ? 'BTC mining-fee-based' : 'fixed tier'} → fee = ${platformFee} ${normalizedCoin}`);
     logger.info(`[FEE CALCULATION] Total needed = amount + fee = ${amount} + ${platformFee} = ${totalNeeded} ${normalizedCoin}`);
     logger.info(`[FEE CALCULATION] ─────────────────────────────────`);
 
@@ -249,41 +296,61 @@ async function sendCrypto({
     if (strategy === 'DIRECT_SEND') {
       // ──────────────────────────────────────────────────────────
       // DIRECT_SEND: on-chain covers amount + fee
-      // TX 1: User wallet → master (platform fee)
-      // TX 2: User wallet → recipient (send amount)
       // ──────────────────────────────────────────────────────────
       logger.info(`[DIRECT_SEND] Sending ${amount} ${normalizedCoin} + ${platformFee} fee from user wallet`);
 
       const privateKey = await queries.getPrivateKeyByHash(targetWallet.hash);
       if (!privateKey) throw Object.assign(new Error('Unable to retrieve wallet key'), { code: 'KEY_NOT_FOUND' });
 
-      // Fund gas (need enough for two TXs)
-      const gasResult = await ensureGas(normalizedNetwork, targetWallet.wallet_address);
-      if (gasResult.funded) {
-        logger.info(`[DIRECT_SEND] Gas funded: ${gasResult.amount} TRX → ${targetWallet.wallet_address}`);
-        await queries.updateTransferStatus(transferRef, 'pending', { gasFunded: true, gasAmount: gasResult.amount, gasTxid: gasResult.txid });
-        await new Promise((r) => setTimeout(r, 3000));
+      if (isBtc) {
+        // ── BTC DIRECT_SEND ─────────────────────────────────────
+        // Single TX: user → recipient (amount BTC)
+        // Mining fee paid from UTXOs automatically
+        // Platform fee deducted from DB balance (not sent on-chain)
+        logger.info(`[DIRECT_SEND:BTC] Sending ${amount} BTC → ${recipientAddress}`);
+        const result = await sendToken('btc', 'BTC', privateKey, recipientAddress, amount, { fromAddress: targetWallet.wallet_address });
+        txid = result.txid;
+        logger.info(`[DIRECT_SEND:BTC] Sent! TXID: ${txid}, mining fee: ${result.feeBtc} BTC`);
+        await queries.updateTransferStatus(transferRef, 'pending', { miningFee: result.feeBtc, miningFeeSats: result.fee });
+
+        // Deduct platform fee from DB (no on-chain fee TX for BTC)
+        if (platformFee > 0 && dbAvailable >= platformFee) {
+          logger.info(`[DIRECT_SEND:BTC] Deducting platform fee ${platformFee} BTC from DB`);
+          await deductBalance(userApiKey, normalizedCoin, platformFee, normalizedNetwork);
+        }
       } else {
-        logger.info(`[DIRECT_SEND] Gas sufficient (${gasResult.balance} TRX)`);
+        // ── TOKEN DIRECT_SEND (USDT/USDC) ───────────────────────
+        // TX 1: User wallet → master (platform fee)
+        // TX 2: User wallet → recipient (send amount)
+
+        // Fund gas (need enough for two TXs)
+        const gasResult = await ensureGas(normalizedNetwork, targetWallet.wallet_address);
+        if (gasResult.funded) {
+          logger.info(`[DIRECT_SEND] Gas funded: ${gasResult.amount} → ${targetWallet.wallet_address}`);
+          await queries.updateTransferStatus(transferRef, 'pending', { gasFunded: true, gasAmount: gasResult.amount, gasTxid: gasResult.txid });
+          await new Promise((r) => setTimeout(r, 3000));
+        } else {
+          logger.info(`[DIRECT_SEND] Gas sufficient (${gasResult.balance})`);
+        }
+
+        // TX 1: Send platform fee from user wallet → master
+        const masterAddress = getMasterAddress(normalizedNetwork);
+        logger.info(`[DIRECT_SEND] TX1: Sending ${platformFee} ${normalizedCoin} fee → master (${masterAddress})`);
+        const feeResult = await sendToken(normalizedNetwork, normalizedCoin, privateKey, masterAddress, platformFee);
+        feeTxid = feeResult.txid;
+        logger.info(`[DIRECT_SEND] Fee sent! TXID: ${feeTxid}`);
+        await queries.updateTransferStatus(transferRef, 'pending', { feeTxid, feeAmount: platformFee });
+
+        // Wait for fee TX to confirm before sending the main amount
+        logger.info(`[DIRECT_SEND] Waiting 3s for fee TX confirmation...`);
+        await new Promise((r) => setTimeout(r, 3000));
+
+        // TX 2: Send amount from user wallet → recipient
+        logger.info(`[DIRECT_SEND] TX2: Sending ${amount} ${normalizedCoin} → ${recipientAddress}`);
+        const result = await sendToken(normalizedNetwork, normalizedCoin, privateKey, recipientAddress, amount);
+        txid = result.txid;
+        logger.info(`[DIRECT_SEND] Sent! TXID: ${txid}`);
       }
-
-      // TX 1: Send platform fee from user wallet → master
-      const masterAddress = getMasterAddress(normalizedNetwork);
-      logger.info(`[DIRECT_SEND] TX1: Sending ${platformFee} ${normalizedCoin} fee → master (${masterAddress})`);
-      const feeResult = await sendToken(normalizedNetwork, normalizedCoin, privateKey, masterAddress, platformFee);
-      feeTxid = feeResult.txid;
-      logger.info(`[DIRECT_SEND] Fee sent! TXID: ${feeTxid}`);
-      await queries.updateTransferStatus(transferRef, 'pending', { feeTxid, feeAmount: platformFee });
-
-      // Wait for fee TX to confirm before sending the main amount
-      logger.info(`[DIRECT_SEND] Waiting 3s for fee TX confirmation...`);
-      await new Promise((r) => setTimeout(r, 3000));
-
-      // TX 2: Send amount from user wallet → recipient
-      logger.info(`[DIRECT_SEND] TX2: Sending ${amount} ${normalizedCoin} → ${recipientAddress}`);
-      const result = await sendToken(normalizedNetwork, normalizedCoin, privateKey, recipientAddress, amount);
-      txid = result.txid;
-      logger.info(`[DIRECT_SEND] Sent! TXID: ${txid}`);
 
     } else if (strategy === 'HYBRID_SEND') {
       // ──────────────────────────────────────────────────────────
@@ -308,32 +375,106 @@ async function sendCrypto({
       const privateKey = await queries.getPrivateKeyByHash(targetWallet.hash);
       if (!privateKey) throw Object.assign(new Error('Unable to retrieve wallet key'), { code: 'KEY_NOT_FOUND' });
 
-      // Fund gas for reclaim tx
-      const gasResult = await ensureGas(normalizedNetwork, targetWallet.wallet_address);
-      if (gasResult.funded) {
-        logger.info(`[HYBRID_SEND] Gas funded: ${gasResult.amount} TRX → ${targetWallet.wallet_address}`);
-        await queries.updateTransferStatus(transferRef, 'pending', { gasFunded: true, gasAmount: gasResult.amount, gasTxid: gasResult.txid });
-        await new Promise((r) => setTimeout(r, 3000));
-      }
-
-      // Reclaim: send user's on-chain balance → master wallet
-      const masterAddress = config.MASTER_WALLET_TRON_ADDRESS;
-      logger.info(`[HYBRID_SEND] Reclaiming ${onChainBalance} ${normalizedCoin}: user wallet → master (${masterAddress})`);
-      const reclaimResult = await sendToken(normalizedNetwork, normalizedCoin, privateKey, masterAddress, onChainBalance);
-      reclaimTxid = reclaimResult.txid;
-      logger.info(`[HYBRID_SEND] Reclaim sent! TXID: ${reclaimTxid}`);
-      await queries.updateTransferStatus(transferRef, 'pending', { reclaimTxid, reclaimAmount: onChainBalance, strategy });
-
-      // Wait for reclaim confirmation (safety — must land before master sends)
-      logger.info(`[HYBRID_SEND] Waiting 3s for reclaim confirmation...`);
-      await new Promise((r) => setTimeout(r, 3000));
-
-      // Master sends full amount → recipient
+      const masterAddress = getMasterAddress(normalizedNetwork);
       const masterKey = getMasterKey(normalizedNetwork);
-      logger.info(`[HYBRID_SEND] Master sending ${amount} ${normalizedCoin} → ${recipientAddress}`);
-      const sendResult = await sendToken(normalizedNetwork, normalizedCoin, masterKey, recipientAddress, amount);
-      txid = sendResult.txid;
-      logger.info(`[HYBRID_SEND] Sent! TXID: ${txid}`);
+
+      if (isBtc) {
+        // ── BTC HYBRID_SEND ───────────────────────────────────
+        // TX 1: Reclaim user's on-chain BTC → master (user pays mining fee)
+        // TX 2: Master sends full amount → recipient (master pays mining fee)
+        // Estimate mining fee and subtract from reclaim amount (fee comes from UTXOs)
+        const userUtxos = await btcClient.getUtxos(targetWallet.wallet_address);
+        const feeRates = await btcClient.getRecommendedFeeRate();
+        const estimatedFee = btcClient.estimateFee(userUtxos.length || 1, 1, feeRates.medium); // 1 output (no change — send all to master)
+        const reclaimAmount = parseFloat((onChainBalance - (estimatedFee / 1e8)).toFixed(8));
+        logger.info(`[HYBRID_SEND:BTC] Reclaiming ${reclaimAmount} BTC (on-chain ${onChainBalance} - ${estimatedFee} sats fee): user → master (${masterAddress})`);
+        const reclaimResult = await sendToken('btc', 'BTC', privateKey, masterAddress, reclaimAmount, { fromAddress: targetWallet.wallet_address });
+        reclaimTxid = reclaimResult.txid;
+        logger.info(`[HYBRID_SEND:BTC] Reclaim sent! TXID: ${reclaimTxid}, mining fee: ${reclaimResult.feeBtc} BTC`);
+        await queries.updateTransferStatus(transferRef, 'pending', { reclaimTxid, reclaimAmount, reclaimMiningFee: reclaimResult.feeBtc, strategy });
+
+        // Wait for reclaim to confirm (BTC is slow — wait longer)
+        logger.info(`[HYBRID_SEND:BTC] Waiting for reclaim confirmation...`);
+        await btcClient.waitForConfirmation(reclaimTxid, 20, 30000);
+
+        // Check master has enough after reclaim landed
+        const masterBalHybridBtc = await getTokenBalance('btc', 'BTC', masterAddress);
+        logger.info(`[HYBRID_SEND:BTC] Master balance after reclaim: ${masterBalHybridBtc.balance} BTC`);
+        if (masterBalHybridBtc.balance < amount) {
+          logger.warn(`[HYBRID_SEND:BTC] Master insufficient after reclaim: has ${masterBalHybridBtc.balance}, needs ${amount}`);
+          await queries.updateTransferStatus(transferRef, 'pending_funding', {
+            strategy: 'HYBRID_SEND', masterBalance: masterBalHybridBtc.balance,
+            amountNeeded: amount, shortfall: amount - masterBalHybridBtc.balance, reclaimTxid,
+          });
+          notifySuperAdmin({
+            title: `Master wallet insufficient: BTC (HYBRID_SEND)`,
+            message: `Transfer ${transferRef} needs ${amount} BTC but master has ${masterBalHybridBtc.balance} after reclaim. User: ${email}. Balance locked.`,
+            metadata: { reference: transferRef, coin: 'BTC', network: 'btc', amount, masterBalance: masterBalHybridBtc.balance, userEmail: email },
+          }).catch(() => {});
+          queries.getSuperAdminEmails().then((adminEmails) => {
+            sendAdminInsufficientBalanceEmail({ adminEmails, coin: 'BTC', network: 'btc', amount, masterBalance: masterBalHybridBtc.balance, reference: transferRef, userEmail: email });
+          }).catch(() => {});
+          return { success: false, code: 'MASTER_INSUFFICIENT_BALANCE', status: 'pending_funding', reference: transferRef, message: `Transfer pending. Master wallet needs funding.` };
+        }
+
+        // Master sends full amount → recipient
+        logger.info(`[HYBRID_SEND:BTC] Master sending ${amount} BTC → ${recipientAddress}`);
+        const sendResult = await sendToken('btc', 'BTC', masterKey, recipientAddress, amount);
+        txid = sendResult.txid;
+        logger.info(`[HYBRID_SEND:BTC] Sent! TXID: ${txid}, mining fee: ${sendResult.feeBtc} BTC`);
+      } else {
+        // ── TOKEN HYBRID_SEND (USDT/USDC) ─────────────────────
+
+        // Fund gas for reclaim tx
+        const gasResult = await ensureGas(normalizedNetwork, targetWallet.wallet_address);
+        if (gasResult.funded) {
+          logger.info(`[HYBRID_SEND] Gas funded: ${gasResult.amount} → ${targetWallet.wallet_address}`);
+          await queries.updateTransferStatus(transferRef, 'pending', { gasFunded: true, gasAmount: gasResult.amount, gasTxid: gasResult.txid });
+          await new Promise((r) => setTimeout(r, 3000));
+        }
+
+        // Reclaim: send user's on-chain balance → master wallet
+        logger.info(`[HYBRID_SEND] Reclaiming ${onChainBalance} ${normalizedCoin}: user wallet → master (${masterAddress})`);
+        const reclaimResult = await sendToken(normalizedNetwork, normalizedCoin, privateKey, masterAddress, onChainBalance);
+        reclaimTxid = reclaimResult.txid;
+        logger.info(`[HYBRID_SEND] Reclaim sent! TXID: ${reclaimTxid}`);
+        await queries.updateTransferStatus(transferRef, 'pending', { reclaimTxid, reclaimAmount: onChainBalance, strategy });
+
+        // Wait for reclaim confirmation
+        logger.info(`[HYBRID_SEND] Waiting 3s for reclaim confirmation...`);
+        await new Promise((r) => setTimeout(r, 3000));
+
+        // Check master has enough after reclaim landed
+        let masterTwHybrid = null;
+        if (normalizedNetwork === 'trc20') {
+          const { createTronWeb } = require('./tronClient');
+          masterTwHybrid = createTronWeb(config.TRON_NETWORK, masterKey, config.TRON_PRO_API_KEY);
+        }
+        const masterBalHybrid = await getTokenBalance(normalizedNetwork, normalizedCoin, masterAddress, masterTwHybrid);
+        logger.info(`[HYBRID_SEND] Master balance after reclaim: ${masterBalHybrid.balance} ${normalizedCoin}`);
+        if (masterBalHybrid.balance < amount) {
+          logger.warn(`[HYBRID_SEND] Master insufficient after reclaim: has ${masterBalHybrid.balance}, needs ${amount}`);
+          await queries.updateTransferStatus(transferRef, 'pending_funding', {
+            strategy: 'HYBRID_SEND', masterBalance: masterBalHybrid.balance,
+            amountNeeded: amount, shortfall: amount - masterBalHybrid.balance, reclaimTxid,
+          });
+          notifySuperAdmin({
+            title: `Master wallet insufficient: ${normalizedCoin} on ${normalizedNetwork} (HYBRID_SEND)`,
+            message: `Transfer ${transferRef} needs ${amount} ${normalizedCoin} but master has ${masterBalHybrid.balance} after reclaim. User: ${email}. Balance locked.`,
+            metadata: { reference: transferRef, coin: normalizedCoin, network: normalizedNetwork, amount, masterBalance: masterBalHybrid.balance, userEmail: email },
+          }).catch(() => {});
+          queries.getSuperAdminEmails().then((adminEmails) => {
+            sendAdminInsufficientBalanceEmail({ adminEmails, coin: normalizedCoin, network: normalizedNetwork, amount, masterBalance: masterBalHybrid.balance, reference: transferRef, userEmail: email });
+          }).catch(() => {});
+          return { success: false, code: 'MASTER_INSUFFICIENT_BALANCE', status: 'pending_funding', reference: transferRef, message: `Transfer pending. Master wallet needs funding.` };
+        }
+
+        // Master sends full amount → recipient
+        logger.info(`[HYBRID_SEND] Master sending ${amount} ${normalizedCoin} → ${recipientAddress}`);
+        const sendResult = await sendToken(normalizedNetwork, normalizedCoin, masterKey, recipientAddress, amount);
+        txid = sendResult.txid;
+        logger.info(`[HYBRID_SEND] Sent! TXID: ${txid}`);
+      }
 
       // Deduct DB portion
       logger.info(`[HYBRID_SEND] Deducting ${dbLockAmount} ${normalizedCoin} from DB`);
@@ -359,7 +500,7 @@ async function sendCrypto({
 
       // Check master has enough
       const masterKey = getMasterKey(normalizedNetwork);
-      const masterAddress = config.MASTER_WALLET_TRON_ADDRESS;
+      const masterAddress = getMasterAddress(normalizedNetwork);
       let masterTronWeb = null;
       if (normalizedNetwork === 'trc20') {
         const { createTronWeb } = require('./tronClient');
@@ -369,10 +510,37 @@ async function sendCrypto({
       logger.info(`[MASTER_SEND] Master balance: ${masterBal.balance} ${normalizedCoin}`);
 
       if (masterBal.balance < amount) {
-        throw Object.assign(
-          new Error(`Master wallet has ${masterBal.balance} ${normalizedCoin} but needs ${amount}`),
-          { code: 'MASTER_INSUFFICIENT_BALANCE' }
-        );
+        // ── INSUFFICIENT: mark pending_funding, email admins, return early ──
+        logger.warn(`[MASTER_SEND] Master wallet insufficient: has ${masterBal.balance} ${normalizedCoin}, needs ${amount} (shortfall: ${(amount - masterBal.balance).toFixed(8)})`);
+        await queries.updateTransferStatus(transferRef, 'pending_funding', {
+          strategy: 'MASTER_SEND',
+          masterBalance: masterBal.balance,
+          amountNeeded: amount,
+          shortfall: amount - masterBal.balance,
+        });
+
+        // Notify admins via DB + email
+        notifySuperAdmin({
+          title: `Master wallet insufficient: ${normalizedCoin} on ${normalizedNetwork}`,
+          message: `Transfer ${transferRef} needs ${amount} ${normalizedCoin} but master only has ${masterBal.balance}. User: ${email}. Balance locked, awaiting funding.`,
+          metadata: { reference: transferRef, coin: normalizedCoin, network: normalizedNetwork, amount, masterBalance: masterBal.balance, userEmail: email },
+        }).catch(() => {});
+
+        queries.getSuperAdminEmails().then((adminEmails) => {
+          sendAdminInsufficientBalanceEmail({
+            adminEmails, coin: normalizedCoin, network: normalizedNetwork,
+            amount, masterBalance: masterBal.balance, reference: transferRef, userEmail: email,
+          });
+        }).catch(() => {});
+
+        // Return early — balance stays locked, catch block is NOT reached
+        return {
+          success: false,
+          code: 'MASTER_INSUFFICIENT_BALANCE',
+          status: 'pending_funding',
+          reference: transferRef,
+          message: `Transfer is pending. The master wallet needs funding (${(amount - masterBal.balance).toFixed(8)} ${normalizedCoin} shortfall).`,
+        };
       }
 
       // Master sends directly to recipient
@@ -380,6 +548,11 @@ async function sendCrypto({
       const result = await sendToken(normalizedNetwork, normalizedCoin, masterKey, recipientAddress, amount);
       txid = result.txid;
       logger.info(`[MASTER_SEND] Sent! TXID: ${txid}`);
+
+      if (isBtc) {
+        logger.info(`[MASTER_SEND:BTC] Mining fee: ${result.feeBtc} BTC`);
+        await queries.updateTransferStatus(transferRef, 'pending', { miningFee: result.feeBtc, miningFeeSats: result.fee });
+      }
 
       // Deduct from DB
       logger.info(`[MASTER_SEND] Deducting ${dbLockAmount} ${normalizedCoin} from DB`);
@@ -389,9 +562,15 @@ async function sendCrypto({
     }
 
     // ─── 9. UPDATE TRANSFER STATUS & BUILD RESPONSE ────────────
-    const net = config.TRON_NETWORK || 'mainnet';
-    const explorerBase = net === 'mainnet' ? 'https://tronscan.org' : `https://${net}.tronscan.org`;
-    const txUrl = (id) => `${explorerBase}/#/transaction/${id}`;
+    let txUrl;
+    if (isBtc) {
+      const explorerBase = btcClient.getExplorerBase();
+      txUrl = (id) => `${explorerBase}${id}`;
+    } else {
+      const net = config.TRON_NETWORK || 'mainnet';
+      const explorerBase = net === 'mainnet' ? 'https://tronscan.org' : `https://${net}.tronscan.org`;
+      txUrl = (id) => `${explorerBase}/#/transaction/${id}`;
+    }
 
     const response = {
       success: true,
@@ -417,7 +596,9 @@ async function sendCrypto({
       response.reclaimExplorerUrl = txUrl(reclaimTxid);
     }
 
-    await queries.updateTransferStatus(transferRef, 'completed', {
+    // BTC: mark as pending_confirmation (needs ~10-30 min on-chain), others: completed immediately
+    const finalStatus = isBtc ? 'pending_confirmation' : 'completed';
+    await queries.updateTransferStatus(transferRef, finalStatus, {
       txid,
       explorerUrl: txUrl(txid),
       strategy,
@@ -426,8 +607,9 @@ async function sendCrypto({
       reclaimTxid: reclaimTxid || undefined,
       reclaimExplorerUrl: reclaimTxid ? txUrl(reclaimTxid) : undefined,
     });
+    response.status = finalStatus;
 
-    logger.success(`═══ sendCrypto COMPLETE — strategy=${strategy}, TXID=${txid}, ref=${transferRef}${reclaimTxid ? ', reclaimTxid=' + reclaimTxid : ''} ═══`);
+    logger.success(`═══ sendCrypto ${finalStatus.toUpperCase()} — strategy=${strategy}, TXID=${txid}, ref=${transferRef}${reclaimTxid ? ', reclaimTxid=' + reclaimTxid : ''} ═══`);
     logger.info(`Explorer: ${txUrl(txid)}`);
     if (reclaimTxid) logger.info(`Reclaim Explorer: ${txUrl(reclaimTxid)}`);
 
@@ -452,18 +634,31 @@ async function sendCrypto({
     }).catch(() => {});
 
     // ─── 12. SEND EMAIL ──────────────────────────────────────────
-    sendCryptoTransferEmail({
-      email,
-      firstName: user.first_name,
-      amount,
-      asset: normalizedCoin,
-      network: normalizedNetwork,
-      recipientAddress,
-      txid,
-      explorerUrl: txUrl(txid),
-      fee: platformFee,
-      reference: transferRef,
-    }).catch(() => {});
+    if (isBtc) {
+      sendBtcTransferInitiatedEmail({
+        email,
+        firstName: user.first_name,
+        amount,
+        recipientAddress,
+        txid,
+        explorerUrl: txUrl(txid),
+        fee: platformFee,
+        reference: transferRef,
+      }).catch(() => {});
+    } else {
+      sendCryptoTransferEmail({
+        email,
+        firstName: user.first_name,
+        amount,
+        asset: normalizedCoin,
+        network: normalizedNetwork,
+        recipientAddress,
+        txid,
+        explorerUrl: txUrl(txid),
+        fee: platformFee,
+        reference: transferRef,
+      }).catch(() => {});
+    }
 
     // ─── 13. CHECK IF RECIPIENT IS INTERNAL ──────────────────────
     let recipientWallet = null;
@@ -577,6 +772,7 @@ function getMasterAddress(network) {
     trc20: config.MASTER_WALLET_TRON_ADDRESS,
     bep20: config.MASTER_WALLET_BSC_ADDRESS,
     erc20: config.MASTER_WALLET_ETH_ADDRESS,
+    btc:   config.MASTER_WALLET_BTC_ADDRESS,
   };
   return addresses[network.toLowerCase()] || null;
 }
@@ -589,6 +785,7 @@ function getMasterKey(network) {
     trc20: config.MASTER_WALLET_TRON_PRIVATE_KEY,
     bep20: config.MASTER_WALLET_BSC_PRIVATE_KEY,
     erc20: config.MASTER_WALLET_ETH_PRIVATE_KEY,
+    btc:   config.MASTER_WALLET_BTC_PRIVATE_KEY,
   };
   const key = keys[network.toLowerCase()];
   if (!key) throw new Error(`No master wallet key configured for ${network}`);

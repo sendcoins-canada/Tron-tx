@@ -7,6 +7,8 @@ const PATTERNS = {
   trc20: /^T[1-9A-HJ-NP-Za-km-z]{33}$/,
   bep20: /^0x[0-9a-fA-F]{40}$/,
   erc20: /^0x[0-9a-fA-F]{40}$/,
+  // BTC: Legacy P2PKH (1...), Script P2SH (3...), SegWit Bech32 (bc1...)
+  btc: /^(1[1-9A-HJ-NP-Za-km-z]{25,34}|3[1-9A-HJ-NP-Za-km-z]{25,34}|bc1[a-zA-HJ-NP-Z0-9]{25,90}|tb1[a-zA-HJ-NP-Z0-9]{25,90}|[mn2][1-9A-HJ-NP-Za-km-z]{25,34})$/,
 };
 
 /**

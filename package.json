@@ -10,11 +10,14 @@
   },
   "dependencies": {
     "@vercel/functions": "^3.4.3",
+    "bitcoinjs-lib": "^7.0.1",
     "chalk": "^4.1.2",
     "dotenv": "^16.4.7",
+    "ecpair": "^3.0.1",
     "express": "^5.2.1",
     "nodemailer": "^8.0.4",
     "pg": "^8.20.0",
+    "tiny-secp256k1": "^2.2.4",
     "tronweb": "^6.0.4",
     "web3": "^1.10.4"
   },

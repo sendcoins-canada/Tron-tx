@@ -1,6 +1,7 @@
 const { createTronWeb } = require('./tronClient');
 const { createWeb3 } = require('./evmClient');
 const { getContract, getContractAddress, loadAbi } = require('../config/contracts');
+const btcClient = require('./bitcoinClient');
 const config = require('../config');
 const logger = require('../utils/logger');
 
@@ -173,9 +174,21 @@ async function sendErc20({ network, privateKey, toAddress, amount, token }) {
 async function sendToken(network, token, privateKey, toAddress, amount, opts = {}) {
   const net = network.toLowerCase();
   logger.info(`[sendToken] network=${net}, token=${token}, to=${toAddress}, amount=${amount}`);
-  logger.info(`[sendToken] TRON_NETWORK=${config.TRON_NETWORK}, keyPrefix=${privateKey?.substring(0, 8)}...`);
+  logger.info(`[sendToken] keyPrefix=${privateKey?.substring(0, 8)}...`);
+
+  if (net === 'btc') {
+    return btcClient.sendBtc({
+      fromPrivateKey: privateKey,
+      toAddress,
+      amount,
+      feeRate: opts.feeRate || null,
+      waitConfirm: opts.waitConfirm || false,
+      fromAddress: opts.fromAddress || null,
+    });
+  }
 
   if (net === 'trc20') {
+    logger.info(`[sendToken] TRON_NETWORK=${config.TRON_NETWORK}`);
     const tronWeb = opts.tronWeb || createTronWeb(
       config.TRON_NETWORK,
       privateKey,

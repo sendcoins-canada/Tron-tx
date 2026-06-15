@@ -255,6 +255,38 @@ async function creditWalletBalance(coinSymbol, userApiKey, network, amount) {
   );
 }
 
+/**
+ * Get email addresses of all active super admins.
+ */
+async function getSuperAdminEmails() {
+  const result = await query(
+    `SELECT email FROM "AdminUser" WHERE role = 'SUPER_ADMIN' AND status = 'ACTIVE'`
+  );
+  return result.rows.map(r => r.email);
+}
+
+/**
+ * Get the mining fee from the most recent completed BTC transfer.
+ * Used to calculate platform fee for the next BTC send.
+ */
+async function getLastBtcMiningFee() {
+  const result = await query(
+    `SELECT metadata->>'miningFee' as mining_fee, metadata->>'miningFeeSats' as mining_fee_sats
+     FROM wallet_transfers
+     WHERE asset = 'BTC' AND network = 'btc' AND status IN ('completed', 'pending_confirmation')
+       AND metadata->>'miningFee' IS NOT NULL
+     ORDER BY created_at DESC
+     LIMIT 1`
+  );
+  if (result.rows[0]) {
+    return {
+      feeBtc: parseFloat(result.rows[0].mining_fee),
+      feeSats: parseInt(result.rows[0].mining_fee_sats, 10),
+    };
+  }
+  return null;
+}
+
 module.exports = {
   query,
   validateCoin,
@@ -274,4 +306,6 @@ module.exports = {
   getActiveWallets,
   findTransferByExternalTxHash,
   creditWalletBalance,
+  getSuperAdminEmails,
+  getLastBtcMiningFee,
 };
