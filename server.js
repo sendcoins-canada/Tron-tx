@@ -621,6 +621,31 @@ app.get('/api/cron/check-deposits', async (req, res) => {
   }
 });
 
+// ─── GET /api/cron/check-btc-confirmations ──────────────────────────────────
+/**
+ * GET /api/cron/check-btc-confirmations
+ * Polls Blockstream for pending_confirmation BTC transfers and marks them completed.
+ * Can be called by Vercel cron or manually with Authorization: Bearer $CRON_SECRET.
+ */
+app.get('/api/cron/check-btc-confirmations', async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret) {
+    const auth = req.headers.authorization;
+    if (auth !== `Bearer ${cronSecret}`) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+  }
+
+  try {
+    const { checkBtcConfirmations } = require('./utils/btcConfirmationChecker');
+    const stats = await checkBtcConfirmations();
+    res.json({ success: true, ...stats });
+  } catch (err) {
+    logger.error(`[CRON] BTC confirmation check failed: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ─── POST /api/withdraw-move ──────────────────────────────────
 
 /**

@@ -314,9 +314,15 @@ async function sendCrypto({
         await queries.updateTransferStatus(transferRef, 'pending', { miningFee: result.feeBtc, miningFeeSats: result.fee });
 
         // Deduct platform fee from DB (no on-chain fee TX for BTC)
-        if (platformFee > 0 && dbAvailable >= platformFee) {
-          logger.info(`[DIRECT_SEND:BTC] Deducting platform fee ${platformFee} BTC from DB`);
-          await deductBalance(userApiKey, normalizedCoin, platformFee, normalizedNetwork);
+        if (platformFee > 0) {
+          if (dbAvailable >= platformFee) {
+            logger.info(`[DIRECT_SEND:BTC] Deducting platform fee ${platformFee} BTC from DB`);
+            await deductBalance(userApiKey, normalizedCoin, platformFee, normalizedNetwork);
+          } else {
+            // DB balance can't cover the fee — log it and record as uncollected
+            logger.warn(`[DIRECT_SEND:BTC] Cannot deduct platform fee ${platformFee} BTC — DB available is only ${dbAvailable}. Fee recorded as uncollected.`);
+            await queries.updateTransferStatus(transferRef, 'pending', { feeUncollected: true, feeAmount: platformFee, feeShortfall: platformFee - dbAvailable });
+          }
         }
       } else {
         // ── TOKEN DIRECT_SEND (USDT/USDC) ───────────────────────
