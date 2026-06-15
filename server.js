@@ -804,6 +804,69 @@ app.post('/api/transfer/resolve', requireApiSecret, async (req, res) => {
   }
 });
 
+// ─── POST /api/transfer/retry ───────────────────────────────
+
+/**
+ * POST /api/transfer/retry
+ *
+ * Retries a pending_funding transfer — admin funded the master wallet,
+ * now re-attempt the send. Unlocks the old lock, then calls sendCrypto
+ * with the original params.
+ *
+ * Body: { reference }
+ */
+app.post('/api/transfer/retry', requireApiSecret, async (req, res) => {
+  const { reference } = req.body;
+  if (!reference) return res.status(400).json({ success: false, error: 'reference is required' });
+
+  const started = Date.now();
+  try {
+    const transfer = await queries.getTransferByReference(reference);
+    if (!transfer) {
+      return res.status(404).json({ success: false, error: 'Transfer not found' });
+    }
+
+    if (transfer.status !== 'pending_funding') {
+      return res.status(400).json({ success: false, error: `Cannot retry transfer with status "${transfer.status}". Only pending_funding transfers can be retried.` });
+    }
+
+    const meta = typeof transfer.metadata === 'string' ? JSON.parse(transfer.metadata) : (transfer.metadata || {});
+    const coin = transfer.asset;
+    const network = transfer.network;
+    const userApiKey = transfer.user_api_key;
+
+    // Unlock the old locked balance first — sendCrypto will re-lock as needed
+    const { unlockBalance } = require('./services/lockService');
+    const lockAmount = parseFloat(transfer.amount) + (meta.platformFee || 0);
+    logger.info(`[RETRY] Unlocking ${lockAmount} ${coin} for retry of ${reference}`);
+    await unlockBalance(userApiKey, coin, lockAmount, network);
+
+    // Mark old transfer as cancelled (the retry will create a new one or reuse)
+    await queries.updateTransferStatus(reference, 'cancelled', {
+      retriedAt: new Date().toISOString(),
+      retriedBy: 'admin',
+    });
+
+    // Re-trigger sendCrypto with original params
+    const { sendCrypto } = require('./services/walletService');
+    const result = await sendCrypto({
+      userApiKey,
+      recipientAddress: transfer.recipient_wallet_address,
+      amount: parseFloat(transfer.amount),
+      coin,
+      network,
+      idempotencyKey: `retry-${reference}-${Date.now()}`,
+    });
+
+    logger.info(`[RETRY] sendCrypto result for ${reference}: ${JSON.stringify({ success: result.success, code: result.code, status: result.status, txid: result.txid })}`);
+    return res.json({ ...result, retried: true, originalReference: reference, elapsed: Date.now() - started });
+
+  } catch (err) {
+    logger.error(`[RETRY] Failed: ${err.message}`);
+    return res.status(500).json({ success: false, error: err.message, elapsed: Date.now() - started });
+  }
+});
+
 if (require.main === module) {
   app.listen(PORT, () => {
     const { getContractAddress } = require('./config/contracts');
