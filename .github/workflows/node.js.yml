@@ -34,8 +34,8 @@ jobs:
           echo DB_PORT=5432 >> .env
 
           # echo # Tron Network
-          echo TRON_NETWORK=shasta >> .env
-          # TRON_NETWORK=mainnet >> .env
+          echo TRON_NETWORK=mainnet >> .env
+          # echo TRON_NETWORK=shasta >> .env  # testnet
           echo TRON_PRO_API_KEY=b5d8d898-3e48-414d-9336-1c861e8926a5 >> .env
           echo MASTER_WALLET_TRON_PRIVATE_KEY=CA860ADB139630DCFA8EE5558D5DC13B9E47384DF7B6CEF4BD4F30889EFDE214 >> .env
           echo MASTER_WALLET_TRON_ADDRESS=TQanRDRe3FMm4Qx5VR9iCwgW5tiyVeHsFM >> .env
