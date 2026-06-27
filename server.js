@@ -479,7 +479,10 @@ app.post('/api/send', requireApiSecret, async (req, res) => {
       const backgroundTask = sendCrypto({ ...sendParams, preGeneratedReference: reference }).then(async (result) => {
         if (!result.success) {
           logger.error(`[ASYNC] Background send returned failure for ref=${reference}: ${result.error}`);
-          await queries.updateTransferStatus(reference, 'failed', {
+          // Master wallet out of gas is recoverable: keep as pending_funding so the
+          // transfer can be resolved/retried once the master wallet is topped up.
+          const recoverable = ['MASTER_INSUFFICIENT_BALANCE', 'MASTER_WALLET_LOW'].includes(result.code);
+          await queries.updateTransferStatus(reference, recoverable ? 'pending_funding' : 'failed', {
             error: result.error,
             code: result.code,
           }).catch(() => {});
