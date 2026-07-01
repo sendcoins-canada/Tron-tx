@@ -47,6 +47,7 @@ async function sendCrypto({
   let strategy = null;
   let reclaimTxid = null;
   let feeTxid = null;
+  let feeCollected = true;
   let dbLocked = false;
   let dbLockAmount = 0;
 
@@ -321,13 +322,14 @@ async function sendCrypto({
           } else {
             // DB balance can't cover the fee — log it and record as uncollected
             logger.warn(`[DIRECT_SEND:BTC] Cannot deduct platform fee ${platformFee} BTC — DB available is only ${dbAvailable}. Fee recorded as uncollected.`);
+            feeCollected = false;
             await queries.updateTransferStatus(transferRef, 'pending', { feeUncollected: true, feeAmount: platformFee, feeShortfall: platformFee - dbAvailable });
           }
         }
       } else {
         // ── TOKEN DIRECT_SEND (USDT/USDC) ───────────────────────
-        // TX 1: User wallet → master (platform fee)
-        // TX 2: User wallet → recipient (send amount)
+        // TX 1: User wallet → recipient (send amount) — MAIN FIRST
+        // TX 2: User wallet → master (platform fee) — FEE LAST, only after main confirms
 
         // Fund gas (need enough for two TXs)
         const gasResult = await ensureGas(normalizedNetwork, targetWallet.wallet_address);
@@ -339,23 +341,37 @@ async function sendCrypto({
           logger.info(`[DIRECT_SEND] Gas sufficient (${gasResult.balance})`);
         }
 
-        // TX 1: Send platform fee from user wallet → master
         const masterAddress = getMasterAddress(normalizedNetwork);
-        logger.info(`[DIRECT_SEND] TX1: Sending ${platformFee} ${normalizedCoin} fee → master (${masterAddress})`);
-        const feeResult = await sendToken(normalizedNetwork, normalizedCoin, privateKey, masterAddress, platformFee);
-        feeTxid = feeResult.txid;
-        logger.info(`[DIRECT_SEND] Fee sent! TXID: ${feeTxid}`);
-        await queries.updateTransferStatus(transferRef, 'pending', { feeTxid, feeAmount: platformFee });
 
-        // Wait for fee TX to confirm before sending the main amount
-        logger.info(`[DIRECT_SEND] Waiting 3s for fee TX confirmation...`);
-        await new Promise((r) => setTimeout(r, 3000));
-
-        // TX 2: Send amount from user wallet → recipient
-        logger.info(`[DIRECT_SEND] TX2: Sending ${amount} ${normalizedCoin} → ${recipientAddress}`);
+        // TX 1: Send amount from user wallet → recipient (MAIN FIRST)
+        // sendToken waits for on-chain confirmation and throws on failure
+        // (e.g. OUT_OF_ENERGY), so reaching the next line proves the funds
+        // were actually delivered. The fee is only charged after this.
+        logger.info(`[DIRECT_SEND] TX1: Sending ${amount} ${normalizedCoin} → ${recipientAddress}`);
         const result = await sendToken(normalizedNetwork, normalizedCoin, privateKey, recipientAddress, amount);
         txid = result.txid;
         logger.info(`[DIRECT_SEND] Sent! TXID: ${txid}`);
+        await queries.updateTransferStatus(transferRef, 'pending', { txid });
+
+        // Wait for the main TX to settle before charging the fee
+        logger.info(`[DIRECT_SEND] Waiting 3s before charging fee...`);
+        await new Promise((r) => setTimeout(r, 3000));
+
+        // TX 2: Send platform fee from user wallet → master (FEE LAST)
+        // Only reached when the main transfer succeeded on-chain. If the fee
+        // leg itself fails, the user has ALREADY received their funds — never
+        // fail the transfer over a fee; record it uncollected for later sweep.
+        logger.info(`[DIRECT_SEND] TX2: Sending ${platformFee} ${normalizedCoin} fee → master (${masterAddress})`);
+        try {
+          const feeResult = await sendToken(normalizedNetwork, normalizedCoin, privateKey, masterAddress, platformFee);
+          feeTxid = feeResult.txid;
+          logger.info(`[DIRECT_SEND] Fee sent! TXID: ${feeTxid}`);
+          await queries.updateTransferStatus(transferRef, 'pending', { feeTxid, feeAmount: platformFee });
+        } catch (feeErr) {
+          logger.warn(`[DIRECT_SEND] Main delivered but fee leg failed: ${feeErr.message}. Recording feeUncollected.`);
+          feeCollected = false;
+          await queries.updateTransferStatus(transferRef, 'pending', { feeUncollected: true, feeAmount: platformFee });
+        }
       }
 
     } else if (strategy === 'HYBRID_SEND') {
@@ -620,24 +636,31 @@ async function sendCrypto({
     if (reclaimTxid) logger.info(`Reclaim Explorer: ${txUrl(reclaimTxid)}`);
 
     // ─── 10. RECORD FEE AS PROFIT ────────────────────────────────
+    // Only book the fee when it was actually collected. If a fee leg was
+    // skipped or failed on-chain (feeCollected=false), booking it here would
+    // create a phantom platform_ledger entry for money that never moved.
     const maskedAddr = `${recipientAddress.slice(0, 6)}...${recipientAddress.slice(-4)}`;
-    recordFee({
-      transactionType: 'crypto_send_fee',
-      source: 'crypto_send',
-      sourceReference: transferRef,
-      currency: 'USD',
-      amount: platformFee,
-      usdEquivalent: platformFee,
-      description: `Platform fee for ${amount} ${normalizedCoin} send to ${maskedAddr}`,
-      userApiKey,
-    }).catch(() => {});
+    if (feeCollected) {
+      recordFee({
+        transactionType: 'crypto_send_fee',
+        source: 'crypto_send',
+        sourceReference: transferRef,
+        currency: 'USD',
+        amount: platformFee,
+        usdEquivalent: platformFee,
+        description: `Platform fee for ${amount} ${normalizedCoin} send to ${maskedAddr}`,
+        userApiKey,
+      }).catch(() => {});
 
-    // ─── 11. NOTIFY SUPER ADMIN ──────────────────────────────────
-    notifySuperAdmin({
-      title: `Fee collected: ${platformFee} ${normalizedCoin}`,
-      message: `Platform fee of ${platformFee} ${normalizedCoin} collected from ${email} for sending ${amount} ${normalizedCoin} to ${maskedAddr}`,
-      metadata: { reference: transferRef, fee: platformFee, amount, asset: normalizedCoin, userEmail: email },
-    }).catch(() => {});
+      // ─── 11. NOTIFY SUPER ADMIN ──────────────────────────────────
+      notifySuperAdmin({
+        title: `Fee collected: ${platformFee} ${normalizedCoin}`,
+        message: `Platform fee of ${platformFee} ${normalizedCoin} collected from ${email} for sending ${amount} ${normalizedCoin} to ${maskedAddr}`,
+        metadata: { reference: transferRef, fee: platformFee, amount, asset: normalizedCoin, userEmail: email },
+      }).catch(() => {});
+    } else {
+      logger.warn(`[FEE] Not booking platform fee for ${transferRef} — fee uncollected. Skipping recordFee + admin notice.`);
+    }
 
     // ─── 12. SEND EMAIL ──────────────────────────────────────────
     if (isBtc) {

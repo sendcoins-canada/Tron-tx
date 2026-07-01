@@ -68,7 +68,8 @@ async function checkAndFundTrxGas({ network, apiKey, masterPrivateKey, masterAdd
   }
 
   logger.success(`[GAS] Funded! TXID: ${receipt.txid}`);
-  logger.info(`[GAS] Explorer: https://shasta.tronscan.org/#/transaction/${receipt.txid}`);
+  const explorerBase = network === 'mainnet' ? 'https://tronscan.org' : `https://${network}.tronscan.org`;
+  logger.info(`[GAS] Explorer: ${explorerBase}/#/transaction/${receipt.txid}`);
   return { funded: true, txid: receipt.txid, amount: deficit, previousBalance: userBalance.balance };
 }
 
